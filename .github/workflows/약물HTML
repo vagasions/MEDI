@@ -1,0 +1,1688 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>MedAI 학습 시스템</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#5D5CDE'
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior: contain;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            position: fixed;
+            width: 100%;
+            height: 100vh; 
+            overflow: hidden;
+        }
+        
+        .hidden { display: none !important; }
+        
+        @keyframes shake { 
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-8px); }
+            75% { transform: translateX(8px); }
+        }
+
+        @keyframes screen-shake-animation {
+            0%, 100% { transform: translateX(0); }
+            25%, 75% { transform: translateX(-4px); }
+            50% { transform: translateX(4px); }
+        }
+        
+        @keyframes pulse-success {
+            0%, 100% { 
+                box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+                transform: scale(1);
+            }
+            50% { 
+                box-shadow: 0 0 20px rgba(34, 197, 94, 0.9), 0 0 30px rgba(34, 197, 94, 0.4);
+                transform: scale(1.08);
+            }
+        }
+        
+        @keyframes bounce-in {
+            0% { transform: scale(0.3); opacity: 0; }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes badge-glow {
+            0%, 100% { 
+                box-shadow: 0 0 5px rgba(251, 191, 36, 0.5);
+            }
+            50% { 
+                box-shadow: 0 0 20px rgba(251, 191, 36, 0.8), 0 0 30px rgba(251, 191, 36, 0.4);
+            }
+        }
+        
+        @keyframes progress-bar-animation {
+            0% { width: 100%; }
+            100% { width: 0%; }
+        }
+
+        .progress-bar-fill {
+            animation-name: progress-bar-animation;
+            animation-timing-function: linear;
+        }
+
+        .shake { animation: shake 0.6s ease-in-out; }
+        .screen-shake-animation { animation: screen-shake-animation 0.3s cubic-bezier(.36,.07,.19,.97) both; }
+        .pulse-success { animation: pulse-success 2s infinite; }
+        .bounce-in { animation: bounce-in 0.6s ease-out; }
+        .badge-glow { animation: badge-glow 1.5s ease-in-out infinite; }
+        
+        .fridge-button {
+            transition: all 0.3s ease;
+            will-change: transform;
+        }
+        
+        .fridge-button:active:not(:disabled) {
+            transform: scale(0.92);
+        }
+        
+        .fridge-button:hover:not(:disabled) {
+            transform: scale(1.05);
+        }
+        
+        .learning-hint {
+            background: linear-gradient(135deg, rgba(100, 160, 255, 0.2), rgba(170, 100, 255, 0.2));
+            border: 1px solid rgba(100, 160, 255, 0.4);
+            backdrop-filter: blur(10px);
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.85); 
+            backdrop-filter: blur(12px); 
+            border: 1px solid rgba(0, 0, 0, 0.08); 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
+        }
+
+        .dark .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        
+        .glass-button {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+        }
+
+        .dark .glass-button {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        
+        .glass-button:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.9);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.07);
+        }
+
+        .dark .glass-button:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.15);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+
+        #sidebar-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.4);
+            z-index: 99;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        #sidebar-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        #sidebar-menu {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 280px; 
+            height: 100%;
+            background-color: #f8f9fa; 
+            box-shadow: 4px 0 15px rgba(0,0,0,0.1);
+            z-index: 100;
+            transform: translateX(-100%);
+            transition: transform 0.3s ease-out;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dark #sidebar-menu {
+            background-color: #1f2937;
+            box-shadow: 4px 0 15px rgba(0,0,0,0.3);
+        }
+
+        #sidebar-menu.active {
+            transform: translateX(0);
+        }
+        
+        .safe-top { padding-top: max(env(safe-area-inset-top), 16px); }
+        .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 16px); }
+        .safe-left { padding-left: max(env(safe-area-inset-left), 16px); }
+        .safe-right { padding-right: max(env(safe-area-inset-right), 16px); }
+        
+        @media (max-width: 640px) {
+            .safe-left { padding-left: max(env(safe-area-inset-left), 12px); }
+            .safe-right { padding-right: max(env(safe-area-inset-right), 12px); }
+            button { 
+                min-height: 38px; 
+                touch-action: manipulation; 
+            }
+            #sidebar-menu { width: 80%; max-width: 300px; }
+        }
+
+        .achievement-badge {
+            transform: scale(0);
+            animation: achievement-pop 0.6s ease-out forwards;
+        }
+
+        @keyframes achievement-pop {
+            0% { transform: scale(0); opacity: 0; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .dark .learning-hint {
+            background: linear-gradient(135deg, rgba(100, 160, 255, 0.15), rgba(170, 100, 255, 0.15));
+            border: 1px solid rgba(100, 160, 255, 0.3);
+        }
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-gray-900 transition-colors duration-300">
+
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="h-screen flex flex-col items-center justify-center text-slate-700 dark:text-slate-300 p-4">
+        <div class="mb-8">
+            <svg class="w-16 h-16 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+        </div>
+        <h1 class="text-3xl font-bold mb-2 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">MedAI 학습 시스템</h1>
+        <p id="loading-message" class="text-slate-500 dark:text-slate-400 mb-4">시스템 준비 중...</p>
+        <div class="w-48 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+            <div id="loading-progress" class="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Menu Screen -->
+    <div id="menu-screen" class="hidden h-screen flex flex-col safe-top safe-bottom safe-left safe-right">
+        
+        <div class="flex justify-between items-center mb-6">
+            <div>
+                <h1 class="text-3xl font-bold text-slate-800 dark:text-slate-200 mb-1">
+                    <span class="mr-2">🧠</span>
+                    <span class="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">MedAI</span>
+                </h1>
+                <p class="text-slate-500 dark:text-slate-400 text-sm">의료진 전용 학습 시스템</p>
+            </div>
+            <button id="menu-button" class="glass-button text-slate-700 dark:text-slate-300 p-3 rounded-xl">
+                <svg id="menu-icon-open" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+                <svg id="menu-icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+
+        <div id="level-badge" class="inline-flex items-center gap-2 px-4 py-2 rounded-full glass-card mb-6 self-start">
+            <span class="text-amber-500">⭐</span>
+            <span class="text-slate-800 dark:text-slate-200 text-sm font-bold">Level 1</span>
+            <span class="text-blue-600 dark:text-blue-400 text-xs">초보자</span>
+        </div>
+
+        <!-- Achievement Badges -->
+        <div id="achievement-badges" class="flex flex-wrap gap-2 mb-4 hidden">
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="glass-card rounded-2xl p-4">
+                <div class="text-center">
+                    <div id="overall-accuracy" class="text-3xl font-black text-slate-800 dark:text-slate-200 mb-1">0%</div>
+                    <div class="text-slate-500 dark:text-slate-400 text-sm">전체 정답률</div>
+                </div>
+            </div>
+            <div class="glass-card rounded-2xl p-4">
+                <div class="text-center">
+                    <div id="total-questions" class="text-3xl font-black text-slate-800 dark:text-slate-200 mb-1">0</div>
+                    <div class="text-slate-500 dark:text-slate-400 text-sm">총 문제 수</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex glass-card rounded-2xl p-1 mb-4">
+            <button id="tab-dashboard" class="tab-button flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 shadow-md">
+                대시보드
+            </button>
+            <button id="tab-analytics" class="tab-button flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400">
+                분석
+            </button>
+            <button id="tab-study" class="tab-button flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400">
+                학습노트
+            </button>
+        </div>
+
+        <div id="tab-content" class="flex-1 overflow-y-auto pb-4"> 
+            <div id="dashboard-content" class="space-y-4">
+                <button id="start-infinite" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-6 rounded-2xl transition-all duration-300 shadow-lg transform hover:scale-[1.02]">
+                    <div class="flex items-center justify-center gap-3">
+                        <span class="text-2xl">🎯</span>
+                        <div class="text-left">
+                            <div class="text-lg font-black">적응형 학습</div>
+                            <div class="text-sm opacity-90">AI가 맞춤형 문제 제공</div>
+                        </div>
+                    </div>
+                </button>
+                
+                <button id="start-study" class="w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-6 rounded-2xl transition-all duration-300 shadow-lg transform hover:scale-[1.02]">
+                    <div class="flex items-center justify-center gap-3">
+                        <span class="text-2xl">📚</span>
+                        <div class="text-left">
+                            <div class="text-lg font-black">약점 집중 학습</div>
+                            <div id="weak-count" class="text-sm opacity-90">약점 약물 집중 공략</div>
+                        </div>
+                    </div>
+                </button>
+
+                <div class="glass-card rounded-2xl p-4">
+                    <h3 class="text-slate-800 dark:text-slate-200 font-bold mb-3 text-center">학습 현황</h3>
+                    <div class="grid grid-cols-2 gap-4 text-center text-sm">
+                        <div>
+                            <div class="text-slate-500 dark:text-slate-400">연속 정답</div>
+                            <div id="current-streak" class="text-slate-800 dark:text-slate-200 font-black text-xl">0회</div>
+                        </div>
+                        <div>
+                            <div class="text-slate-500 dark:text-slate-400">최고 기록</div>
+                            <div id="best-streak" class="text-slate-800 dark:text-slate-200 font-black text-xl">0회</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="analytics-content" class="hidden space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="glass-card rounded-2xl p-4 text-center">
+                        <div class="text-blue-500 mb-2">⏱️</div>
+                        <div id="avg-time" class="text-xl font-black text-slate-800 dark:text-slate-200">N/A</div>
+                        <div class="text-slate-500 dark:text-slate-400 text-xs">평균 시간</div>
+                    </div>
+                    <div class="glass-card rounded-2xl p-4 text-center">
+                        <div class="text-green-500 mb-2">✅</div>
+                        <div id="total-correct" class="text-xl font-black text-slate-800 dark:text-slate-200">0</div>
+                        <div class="text-slate-500 dark:text-slate-400 text-xs">누적 정답</div>
+                    </div>
+                </div>
+                
+                <div class="glass-card rounded-2xl p-4">
+                    <h3 class="text-slate-800 dark:text-slate-200 font-bold mb-3 text-sm">냉장고별 성과</h3>
+                    <div id="fridge-performance" class="space-y-3"></div>
+                </div>
+
+                <div class="glass-card rounded-2xl p-4">
+                    <h3 class="text-slate-800 dark:text-slate-200 font-bold mb-3 text-sm">학습 패턴</h3>
+                    <div id="learning-pattern" class="space-y-2 text-xs text-slate-600 dark:text-slate-400"></div>
+                </div>
+            </div>
+
+            <div id="study-content" class="hidden space-y-4">
+                <div id="wrong-medicines-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Playing Screen -->
+    <div id="playing-screen" class="hidden h-screen flex flex-col safe-top">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-0.5 px-2 pt-0.5"> 
+            <div class="text-slate-800 dark:text-slate-200">
+                <div id="game-mode" class="text-sm font-bold"></div> 
+                <div id="question-number" class="text-[10px] text-slate-500 dark:text-slate-400"></div>
+            </div>
+            <div class="flex items-center gap-1.5"> 
+                <div id="session-score" class="glass-card px-2 py-1 rounded-full text-slate-800 dark:text-slate-200 font-bold text-xs"></div> 
+                <button id="exit-game" class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded-md font-bold text-[10px] transition-all"> 
+                    종료
+                </button>
+            </div>
+        </div>
+        
+        <!-- Stats Bar -->
+        <div class="grid grid-cols-3 gap-1 mb-0.5 px-2"> 
+            <div class="glass-card p-1.5 rounded-md text-center text-slate-800 dark:text-slate-200"> 
+                <div id="correct-count" class="font-bold text-xs">0</div> 
+                <div class="text-slate-500 dark:text-slate-400 text-[9px]">정답</div> 
+            </div>
+            <div class="glass-card p-1.5 rounded-md text-center text-slate-800 dark:text-slate-200"> 
+                <div id="incorrect-count" class="font-bold text-xs">0</div> 
+                <div class="text-slate-500 dark:text-slate-400 text-[9px]">오답</div> 
+            </div>
+            <div class="glass-card p-1.5 rounded-md text-center text-slate-800 dark:text-slate-200"> 
+                <div id="accuracy-rate" class="font-bold text-xs">0%</div> 
+                <div class="text-slate-500 dark:text-slate-400 text-[9px]">정확도</div> 
+            </div>
+        </div>
+
+        <!-- Main Game Area (Question & Fridges) -->
+        <div class="flex-1 flex flex-col items-center justify-around px-2 overflow-hidden pt-1"> 
+            <div id="question-card" class="bg-white/90 dark:bg-gray-800/90 backdrop-blur-lg rounded-xl p-2 shadow-lg border border-gray-200/70 dark:border-gray-700/70 max-w-sm w-full mb-1.5 slide-in"> 
+                <div class="text-center">
+                    <div class="text-lg mb-0.5">🏥</div> 
+                    <h2 class="text-xs font-bold text-gray-900 dark:text-gray-100 mb-0.5">응급 상황</h2> 
+                    <div class="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30 rounded-lg p-1.5 mb-0.5 border-2 border-blue-200 dark:border-blue-700"> 
+                        <p class="text-gray-700 dark:text-gray-300 text-[10px] mb-0.5 font-medium">"의료진님, 이 약물을 신속히 준비해 주세요!"</p> 
+                        <p id="medicine-name" class="text-sm font-black text-slate-800 dark:text-slate-200 break-words"></p>
+                    </div>
+                    <p class="text-gray-700 dark:text-gray-300 text-[10px] font-medium">어느 냉장고에서 찾아야 할까요?</p> 
+                </div>
+            </div>
+
+            <div id="fridges-container" class="grid grid-cols-2 gap-2 w-full max-w-sm mb-1"> 
+            </div>
+        </div>
+        
+        <!-- Bottom Feedback Area -->
+        <div class="px-2 pb-0.5 safe-bottom"> 
+            <div id="feedback-area" class="h-9 flex items-center justify-center mb-0.5">
+            </div>
+            <div id="hint-area" class="hidden">
+                <div class="learning-hint rounded-lg p-1.5 max-w-sm mx-auto"> 
+                    <div class="flex items-start gap-1"> 
+                        <div class="text-base">💡</div> 
+                        <div>
+                            <div class="text-blue-700 dark:text-blue-300 font-bold text-[10px] mb-0.5">학습 팁</div> 
+                            <div id="hint-text" class="text-slate-700 dark:text-slate-300 text-[9px]"></div> 
+                        </div>
+                    </div>
+                    <div id="next-question-progress-container" class="mt-1 h-0.5 bg-slate-300/70 dark:bg-slate-600/70 rounded-full overflow-hidden"> 
+                        <div id="next-question-progress-bar" class="h-full bg-blue-500 rounded-full"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal" class="fixed inset-0 bg-gray-900/30 backdrop-blur-sm flex items-center justify-center z-50 p-4 hidden">
+        <div class="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl max-w-md w-full border border-gray-200 dark:border-gray-700">
+            <div class="text-center mb-6">
+                <h3 id="modal-title" class="text-xl font-bold text-slate-800 dark:text-slate-200 mb-2"></h3>
+                <p id="modal-content" class="text-slate-600 dark:text-slate-400 text-sm whitespace-pre-line"></p>
+            </div>
+            <div class="flex gap-3">
+                <button id="modal-cancel" class="flex flex-1 items-center justify-center py-3 rounded-xl bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 font-bold transition-all">취소</button>
+                <button id="modal-confirm" class="flex flex-1 items-center justify-center py-3 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold transition-all">확인</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar Overlay -->
+    <div id="sidebar-overlay"></div>
+
+    <!-- Sidebar Menu -->
+    <div id="sidebar-menu" class="safe-top safe-bottom safe-left safe-right">
+        <div class="p-4 border-b border-slate-200 dark:border-slate-700">
+            <h2 class="text-xl font-bold text-slate-700 dark:text-slate-300">메뉴</h2>
+        </div>
+        <nav class="flex-1 p-4 space-y-2">
+            <button id="sidebar-reset-data" class="w-full text-left flex items-center gap-3 px-3 py-3 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                <svg class="w-5 h-5 text-slate-500 dark:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                데이터 초기화
+            </button>
+            <button id="sidebar-app-info" class="w-full text-left flex items-center gap-3 px-3 py-3 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                <svg class="w-5 h-5 text-slate-500 dark:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                앱 정보
+            </button>
+        </nav>
+        <div class="p-4 border-t border-slate-200 dark:border-slate-700">
+            <button id="sidebar-close-button" class="w-full bg-slate-600 hover:bg-slate-700 dark:bg-slate-500 dark:hover:bg-slate-600 text-white font-semibold py-3 rounded-lg transition-colors">
+                닫기
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Dark mode detection and setup
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.classList.add('dark');
+        }
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+            if (event.matches) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        });
+
+        // Memory-based storage system (localStorage not available in iframe)
+        let persistentData = null;
+        
+        // Enhanced App state with spaced repetition and better randomization
+        let appState = {
+            initialized: false,
+            statistics: null,
+            gameState: 'loading',
+            activeTab: 'dashboard',
+            gameMode: 'infinite',
+            currentQuestion: null,
+            sessionStats: {
+                score: 0,
+                correct: 0,
+                incorrect: 0,
+                questionNumber: 0,
+                perfectSession: true,
+                roundNumber: 1
+            },
+            showFeedback: false,
+            selectedAnswer: null,
+            questionStartTime: null,
+            recentMedicines: [],
+            questionPool: [],
+            currentQuestionIndex: 0,
+            isSidebarOpen: false,
+            nextQuestionTimerId: null,
+            achievements: [],
+            sessionAchievements: [],
+            questionsPerRound: 20,
+            spacedRepetitionData: {}
+        };
+
+        // Achievement definitions
+        const ACHIEVEMENTS = {
+            FIRST_CORRECT: { id: 'first_correct', title: '첫 정답!', description: '첫 번째 문제를 맞혔습니다', icon: '🎯' },
+            STREAK_5: { id: 'streak_5', title: '연속 5정답', description: '5문제를 연속으로 맞혔습니다', icon: '🔥' },
+            STREAK_10: { id: 'streak_10', title: '연속 10정답', description: '10문제를 연속으로 맞혔습니다', icon: '⚡' },
+            STREAK_20: { id: 'streak_20', title: '연속 20정답', description: '20문제를 연속으로 맞혔습니다', icon: '💫' },
+            PERFECT_SESSION: { id: 'perfect_session', title: '완벽한 세션', description: '10문제 이상 모두 정답', icon: '🌟' },
+            QUICK_LEARNER: { id: 'quick_learner', title: '빠른 학습자', description: '평균 3초 내 정답', icon: '⚡' },
+            TOTAL_100: { id: 'total_100', title: '백전백승', description: '총 100문제 돌파', icon: '💯' },
+            WEAKNESS_CONQUEROR: { id: 'weakness_conqueror', title: '약점 정복자', description: '모든 약점 해결', icon: '🏆' },
+            NIGHT_OWL: { id: 'night_owl', title: '올빼미족', description: '밤 10시 이후 학습', icon: '🦉' },
+            EARLY_BIRD: { id: 'early_bird', title: '일찍 일어나는 새', description: '오전 6시 전 학습', icon: '🐦' },
+            ROUND_MASTER: { id: 'round_master', title: '라운드 마스터', description: '첫 라운드 완주', icon: '🎖️' }
+        };
+
+        // Fridge data
+        const fridgeData = {
+            1: { name: "1번 냉장고", category: "일반 약물", color: "from-sky-500 to-sky-700", medicines: ["로니움주", "피블라스트", "지노프로질정", "카마졸질정", "타코실", "뉴트로진주", "살무사 항독소주", "뉴라스타주", "이베니티주", "아조비", "알부민(영양제)", "앰겔러티"] },
+            2: { name: "2번 냉장고", category: "인슐린 및 주사제", color: "from-emerald-500 to-emerald-700", medicines: ["프롤리아", "테타불린", "인슐린 니들", "휴마로그 믹스25", "휴마로그 믹스50", "휴마로그 퀵펜", "테로사카트리지", "투제오주", "란투스주", "휴물린알주", "아스코빅(낱개)", "비타모주"] },
+            3: { name: "3번 냉장고", category: "백신 전용", color: "from-violet-500 to-violet-700", medicines: ["보령 A형간염(A형간염)", "스카이조스터(대상포진)", "싱그릭스(대상포진)", "가다실9가(자궁경부암)", "박스뉴반스(폐렴구균15가)", "디티부스터(파상풍, 디프테리아)", "부스트릭스(백일해, 디프테리아, 파상풍)", "유박스비(B형간염)", "가다실4가"] },
+            4: { name: "4번 냉장고", category: "빈혈제 및 신장약", color: "from-amber-500 to-amber-700", medicines: ["네스프(빈혈제,신장실)", "에스포젠(빈혈제)"] }
+        };
+
+        const allMedicines = Object.entries(fridgeData).flatMap(([fridgeId, fridge]) =>
+            fridge.medicines.map(medicine => ({ medicine, fridgeId: parseInt(fridgeId), fridgeName: fridge.name, category: fridge.category }))
+        );
+
+        const learningTips = {
+            1: ["일반 약물은 주로 주사제와 경구약이 포함됩니다.", "약물명을 소리내어 읽으면 기억에 더 오래 남습니다.", "비슷한 약물명끼리 그룹화해서 기억해보세요."],
+            2: ["인슐린은 당뇨 환자의 생명과 직결되니 정확한 보관이 중요합니다.", "주사제는 온도에 민감하므로 냉장 보관이 필수입니다.", "휴마로그, 란투스 등 인슐린 브랜드명을 기억해주세요."],
+            3: ["백신은 면역력 형성을 위한 예방약물입니다.", "백신명에 질환명이 포함된 경우가 많으니 주의깊게 읽어보세요.", "대상포진, 간염, 자궁경부암 등 질환별로 분류해보세요."],
+            4: ["빈혈제는 혈액 관련 질환 치료약입니다.", "신장약과 빈혈제는 함께 보관되는 경우가 많습니다.", "네스프, 에스포젠은 빈혈치료제의 대표적인 약물입니다."]
+        };
+
+        function getDefaultStatistics() {
+            return { 
+                totalQuestions: 0, 
+                correctAnswers: 0, 
+                wrongAnswers: {}, 
+                reactionTimes: {}, 
+                learningCurve: [], 
+                streaks: { current: 0, best: 0 }, 
+                sessionCount: 0, 
+                lastPlayDate: null, 
+                achievements: [], 
+                studyPatterns: [],
+                spacedRepetition: {},
+                roundsCompleted: 0,
+                timestamp: Date.now() 
+            };
+        }
+
+        function saveData() {
+            if (!appState.statistics) return;
+            // Since localStorage is not available in iframe, we'll just keep data in memory
+            persistentData = { ...appState.statistics, timestamp: Date.now(), version: '4.15' };
+            console.log('Data saved to memory');
+        }
+
+        function loadData() {
+            // Return saved data from memory
+            if (persistentData && persistentData.version === '4.15') {
+                console.log('Data loaded from memory');
+                return persistentData;
+            }
+            console.log('No saved data found');
+            return null;
+        }
+
+        // Enhanced haptic feedback for all devices including iPhone
+        function triggerHapticFeedback(type = 'light') {
+            try {
+                // Modern Haptic API (iOS Safari supports this)
+                if ('vibrate' in navigator) {
+                    const patterns = {
+                        light: [50],
+                        medium: [100],
+                        heavy: [200],
+                        success: [50, 50, 100],
+                        error: [200, 100, 200, 100, 200],
+                        tap: [10]
+                    };
+                    navigator.vibrate(patterns[type] || patterns.light);
+                }
+
+                // Try iOS-specific haptic feedback
+                if (window.navigator && window.navigator.vibrate) {
+                    window.navigator.vibrate(type === 'error' ? [200, 100, 200] : [50]);
+                }
+
+                // Additional iOS haptic support through touch events
+                if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                    // This helps with iOS haptic feedback
+                    document.body.style.webkitTapHighlightColor = 'transparent';
+                }
+            } catch (error) {
+                console.log('Haptic feedback not supported');
+            }
+        }
+
+        // Advanced Fisher-Yates shuffle algorithm for better randomization
+        function shuffleArray(array) {
+            const shuffled = [...array];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            return shuffled;
+        }
+
+        // Spaced repetition algorithm for enhanced learning
+        function calculateSpacedRepetitionPriority(medicine) {
+            const now = Date.now();
+            const data = appState.statistics.spacedRepetition[medicine] || {
+                interval: 1,
+                repetition: 0,
+                easeFactor: 2.5,
+                nextReviewDate: now,
+                lastReviewDate: 0
+            };
+
+            // If it's time for review, increase priority
+            if (now >= data.nextReviewDate) {
+                return 10 + (data.repetition * 2); // Higher priority for due reviews
+            }
+
+            // Decrease priority for recent reviews
+            const timeSinceReview = now - data.lastReviewDate;
+            const daysSinceReview = timeSinceReview / (1000 * 60 * 60 * 24);
+            
+            return Math.max(1, 5 - daysSinceReview);
+        }
+
+        function updateSpacedRepetition(medicine, isCorrect, responseTime) {
+            const now = Date.now();
+            const data = appState.statistics.spacedRepetition[medicine] || {
+                interval: 1,
+                repetition: 0,
+                easeFactor: 2.5,
+                nextReviewDate: now,
+                lastReviewDate: 0
+            };
+
+            // Quality of response (0-5 scale)
+            let quality = isCorrect ? 4 : 1;
+            if (isCorrect && responseTime < 3000) quality = 5; // Quick correct answer
+            if (!isCorrect && responseTime > 10000) quality = 0; // Slow wrong answer
+
+            // Update ease factor
+            data.easeFactor = Math.max(1.3, data.easeFactor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)));
+
+            if (quality >= 3) {
+                if (data.repetition === 0) {
+                    data.interval = 1;
+                } else if (data.repetition === 1) {
+                    data.interval = 6;
+                } else {
+                    data.interval = Math.round(data.interval * data.easeFactor);
+                }
+                data.repetition++;
+            } else {
+                data.repetition = 0;
+                data.interval = 1;
+            }
+
+            data.lastReviewDate = now;
+            data.nextReviewDate = now + (data.interval * 24 * 60 * 60 * 1000); // Convert days to milliseconds
+
+            appState.statistics.spacedRepetition[medicine] = data;
+        }
+
+        // Enhanced question pool generation with smart algorithms
+        function generateQuestionPool() {
+            let availableMedicines = [...allMedicines];
+            
+            if (appState.gameMode === 'study') {
+                // Study mode: Focus on wrong answers with spaced repetition
+                const wrongMedicines = Object.keys(appState.statistics.wrongAnswers || {})
+                    .filter(med => appState.statistics.wrongAnswers[med] > 0);
+                
+                if (wrongMedicines.length === 0) return [];
+                
+                // Weight medicines by priority (wrong count + spaced repetition)
+                const weightedMedicines = wrongMedicines.map(medicine => {
+                    const medicineData = allMedicines.find(m => m.medicine === medicine);
+                    const wrongCount = appState.statistics.wrongAnswers[medicine] || 0;
+                    const spacedPriority = calculateSpacedRepetitionPriority(medicine);
+                    const weight = wrongCount * 3 + spacedPriority;
+                    
+                    return { ...medicineData, weight };
+                }).filter(m => m.medicine);
+
+                // Create pool with weighted random selection
+                const pool = [];
+                for (let i = 0; i < appState.questionsPerRound * 2; i++) {
+                    const totalWeight = weightedMedicines.reduce((sum, m) => sum + m.weight, 0);
+                    let random = Math.random() * totalWeight;
+                    
+                    for (const medicine of weightedMedicines) {
+                        random -= medicine.weight;
+                        if (random <= 0) {
+                            pool.push(medicine);
+                            break;
+                        }
+                    }
+                }
+                
+                return shuffleArray(pool).slice(0, appState.questionsPerRound);
+            } else {
+                // Infinite mode: Adaptive learning with variety
+                const recentMedicines = appState.recentMedicines.slice(-Math.floor(allMedicines.length / 2));
+                
+                // Prioritize medicines that need review
+                const prioritizedMedicines = allMedicines.map(medicine => {
+                    const wrongCount = appState.statistics.wrongAnswers[medicine.medicine] || 0;
+                    const spacedPriority = calculateSpacedRepetitionPriority(medicine.medicine);
+                    const recentPenalty = recentMedicines.includes(medicine.medicine) ? -5 : 0;
+                    
+                    return {
+                        ...medicine,
+                        priority: wrongCount * 2 + spacedPriority + recentPenalty + Math.random() * 3
+                    };
+                });
+
+                // Sort by priority and take varied selection
+                prioritizedMedicines.sort((a, b) => b.priority - a.priority);
+                
+                // Take top priority medicines with some randomness
+                const pool = [];
+                const highPriority = prioritizedMedicines.slice(0, Math.floor(appState.questionsPerRound * 0.7));
+                const randomSelection = shuffleArray(prioritizedMedicines.slice(Math.floor(appState.questionsPerRound * 0.7)));
+                
+                pool.push(...shuffleArray(highPriority));
+                pool.push(...randomSelection.slice(0, appState.questionsPerRound - highPriority.length));
+                
+                return shuffleArray(pool).slice(0, appState.questionsPerRound);
+            }
+        }
+
+        function selectNextQuestion() {
+            // If we've exhausted the current pool, generate a new one
+            if (appState.currentQuestionIndex >= appState.questionPool.length) {
+                appState.questionPool = generateQuestionPool();
+                appState.currentQuestionIndex = 0;
+                
+                if (appState.questionPool.length === 0) {
+                    return null; // No questions available
+                }
+            }
+            
+            const question = appState.questionPool[appState.currentQuestionIndex];
+            appState.currentQuestionIndex++;
+            
+            return question;
+        }
+
+        function generateQuestion() {
+            clearTimeout(appState.nextQuestionTimerId);
+            const progressBar = document.getElementById('next-question-progress-bar');
+            if(progressBar) {
+                progressBar.style.animation = 'none'; 
+                progressBar.offsetHeight; 
+            }
+
+            const question = selectNextQuestion();
+            if (!question) {
+                const message = appState.gameMode === 'study' ? 
+                    "🎉 축하합니다! 약점 약물을 모두 정복했습니다!" : 
+                    "모든 문제를 풀어보셨습니다! 데이터를 초기화하거나 다시 시작해주세요.";
+                showModal("학습 완료", message, () => setGameState('menu'), false);
+                return;
+            }
+
+            appState.currentQuestion = question;
+            appState.questionStartTime = Date.now();
+            
+            // Enhanced recent medicines tracking for better randomization
+            appState.recentMedicines.push(question.medicine);
+            const maxRecent = Math.max(8, Math.floor(allMedicines.length / 4));
+            if (appState.recentMedicines.length > maxRecent) {
+                appState.recentMedicines.shift();
+            }
+            
+            renderPlayingScreen();
+        }
+        
+        function startNextQuestionTimer(duration) {
+            clearTimeout(appState.nextQuestionTimerId); 
+
+            const progressBar = document.getElementById('next-question-progress-bar');
+            if (progressBar) {
+                progressBar.style.animation = 'none'; 
+                progressBar.offsetHeight; 
+                progressBar.style.animation = `progress-bar-animation ${duration / 1000}s linear`;
+            }
+
+            appState.nextQuestionTimerId = setTimeout(() => {
+                const fridgeButtons = document.querySelectorAll('.fridge-button');
+                fridgeButtons.forEach(btn => { 
+                    btn.disabled = false; 
+                    btn.classList.remove('shake', 'pulse-success'); 
+                });
+                
+                appState.showFeedback = false;
+                appState.selectedAnswer = null;
+                const hintArea = document.getElementById('hint-area');
+                if (hintArea) hintArea.classList.add('hidden'); 
+                
+                // Check if round is complete
+                if (appState.sessionStats.questionNumber >= appState.questionsPerRound) {
+                    completeRound();
+                    return;
+                }
+                
+                generateQuestion();
+            }, duration);
+        }
+
+        function completeRound() {
+            const roundNumber = appState.sessionStats.roundNumber;
+            const correctAnswers = appState.sessionStats.correct;
+            const totalQuestions = appState.sessionStats.questionNumber;
+            const accuracy = Math.round((correctAnswers / totalQuestions) * 100);
+            
+            // Update statistics
+            appState.statistics.roundsCompleted = (appState.statistics.roundsCompleted || 0) + 1;
+            
+            // Check for round completion achievement
+            if (roundNumber === 1) {
+                checkAchievement('ROUND_MASTER');
+            }
+            
+            const message = `라운드 ${roundNumber} 완료!\n\n` +
+                          `정답: ${correctAnswers}/${totalQuestions}문제\n` +
+                          `정확도: ${accuracy}%\n\n` +
+                          `다음 라운드를 진행하시겠습니까?`;
+            
+            showModal("🎯 라운드 완료", message, () => {
+                // Start next round
+                appState.sessionStats.roundNumber++;
+                appState.sessionStats.questionNumber = 0;
+                appState.sessionStats.correct = 0;
+                appState.sessionStats.incorrect = 0;
+                appState.questionPool = generateQuestionPool();
+                appState.currentQuestionIndex = 0;
+                generateQuestion();
+            }, true);
+        }
+
+        function handleAnswer(fridgeId) {
+            if (appState.showFeedback || !appState.currentQuestion) return;
+            
+            const isCorrect = fridgeId === appState.currentQuestion.fridgeId;
+            const medicineName = appState.currentQuestion.medicine;
+            const reactionTime = Date.now() - appState.questionStartTime;
+            
+            // Enhanced haptic feedback
+            triggerHapticFeedback(isCorrect ? 'success' : 'error');
+            
+            appState.selectedAnswer = fridgeId;
+            appState.showFeedback = true;
+            appState.sessionStats.questionNumber++;
+            
+            if (isCorrect) { 
+                appState.sessionStats.correct++; 
+                appState.sessionStats.score++; 
+            } else { 
+                appState.sessionStats.incorrect++; 
+                appState.sessionStats.perfectSession = false;
+            }
+            
+            // Update statistics with enhanced tracking
+            appState.statistics.totalQuestions++;
+            appState.statistics.reactionTimes[medicineName] = (appState.statistics.reactionTimes[medicineName] || []).concat(reactionTime);
+            
+            // Update spaced repetition data
+            updateSpacedRepetition(medicineName, isCorrect, reactionTime);
+            
+            if (isCorrect) {
+                appState.statistics.correctAnswers++;
+                appState.statistics.streaks.current++;
+                appState.statistics.streaks.best = Math.max(appState.statistics.streaks.best, appState.statistics.streaks.current);
+                
+                // Reduce wrong answer count (but keep minimum for spaced repetition)
+                if (appState.statistics.wrongAnswers[medicineName] > 0) {
+                    appState.statistics.wrongAnswers[medicineName] = Math.max(0, appState.statistics.wrongAnswers[medicineName] - 1);
+                }
+                
+                // Check achievements
+                checkAchievements(isCorrect, reactionTime);
+            } else {
+                appState.statistics.streaks.current = 0;
+                appState.statistics.wrongAnswers[medicineName] = (appState.statistics.wrongAnswers[medicineName] || 0) + 1;
+            }
+            
+            // Track study patterns
+            trackStudyPattern();
+            
+            // Visual feedback
+            const fridgeButtons = document.querySelectorAll('.fridge-button');
+            const correctButton = document.querySelector(`[data-fridge="${appState.currentQuestion.fridgeId}"]`);
+            const selectedButton = document.querySelector(`[data-fridge="${fridgeId}"]`);
+            const playingScreen = document.getElementById('playing-screen');
+            
+            fridgeButtons.forEach(btn => btn.disabled = true);
+            renderPlayingScreen(); 
+
+            if (isCorrect) {
+                if (correctButton) correctButton.classList.add('pulse-success');
+            } else {
+                if (selectedButton) selectedButton.classList.add('shake');
+                if (playingScreen) playingScreen.classList.add('screen-shake-animation');
+                setTimeout(() => {
+                    if (playingScreen) playingScreen.classList.remove('screen-shake-animation');
+                }, 300);
+            }
+            
+            showLearningHint(appState.currentQuestion.fridgeId, isCorrect); 
+
+            // Enhanced learning curve tracking
+            appState.statistics.learningCurve = [...(appState.statistics.learningCurve || []).slice(-100), { 
+                medicineName, 
+                question: appState.statistics.totalQuestions, 
+                correct: isCorrect, 
+                reactionTime, 
+                timestamp: Date.now(),
+                fridgeId: appState.currentQuestion.fridgeId,
+                sessionNumber: appState.statistics.sessionCount,
+                roundNumber: appState.sessionStats.roundNumber
+            }];
+            
+            saveData();
+            
+            const nextQuestionDelay = isCorrect ? 1200 : 2000; 
+            startNextQuestionTimer(nextQuestionDelay);
+        }
+
+        function checkAchievements(isCorrect, reactionTime) {
+            if (isCorrect) {
+                // First correct answer
+                if (appState.statistics.correctAnswers === 1) {
+                    checkAchievement('FIRST_CORRECT');
+                }
+                
+                // Streak achievements
+                const streak = appState.statistics.streaks.current;
+                if (streak === 5) checkAchievement('STREAK_5');
+                if (streak === 10) checkAchievement('STREAK_10');
+                if (streak === 20) checkAchievement('STREAK_20');
+                
+                // Quick learner
+                const allReactionTimes = Object.values(appState.statistics.reactionTimes).flat();
+                if (allReactionTimes.length > 0) {
+                    const avgReactionTime = allReactionTimes.reduce((a, b) => a + b, 0) / allReactionTimes.length;
+                    if (avgReactionTime < 3000) checkAchievement('QUICK_LEARNER');
+                }
+            }
+            
+            // Total questions milestone
+            if (appState.statistics.totalQuestions === 100) {
+                checkAchievement('TOTAL_100');
+            }
+            
+            // Perfect session (at end of session)
+            if (appState.sessionStats.questionNumber >= 10 && appState.sessionStats.perfectSession) {
+                checkAchievement('PERFECT_SESSION');
+            }
+            
+            // Time-based achievements
+            const hour = new Date().getHours();
+            if (hour >= 22 || hour < 6) checkAchievement('NIGHT_OWL');
+            if (hour >= 5 && hour < 8) checkAchievement('EARLY_BIRD');
+        }
+
+        function checkAchievement(achievementId) {
+            if (!appState.statistics.achievements.includes(achievementId) && !appState.sessionAchievements.includes(achievementId)) {
+                appState.statistics.achievements.push(achievementId);
+                appState.sessionAchievements.push(achievementId);
+                // Achievement notifications are now disabled as requested
+                saveData();
+            }
+        }
+
+        function trackStudyPattern() {
+            const now = new Date();
+            const pattern = {
+                timestamp: now.getTime(),
+                hour: now.getHours(),
+                dayOfWeek: now.getDay(),
+                correct: appState.selectedAnswer === appState.currentQuestion.fridgeId
+            };
+            
+            appState.statistics.studyPatterns = [...(appState.statistics.studyPatterns || []).slice(-500), pattern];
+        }
+
+        function showLearningHint(fridgeId, isCorrect) {
+            const hintArea = document.getElementById('hint-area');
+            const hintText = document.getElementById('hint-text');
+            const progressContainer = document.getElementById('next-question-progress-container');
+            
+            if (!isCorrect && learningTips[fridgeId] && hintArea && hintText) {
+                const tips = learningTips[fridgeId];
+                const randomTip = tips[Math.floor(Math.random() * tips.length)];
+                hintText.textContent = randomTip;
+                hintArea.classList.remove('hidden');
+                hintArea.classList.add('bounce-in');
+                if (progressContainer) progressContainer.classList.remove('hidden'); 
+            } else {
+                if (hintArea) hintArea.classList.add('hidden'); 
+                if (progressContainer) progressContainer.classList.add('hidden');
+            }
+        }
+
+        function setGameState(newState) {
+            appState.gameState = newState;
+            const screens = ['loading-screen', 'menu-screen', 'playing-screen'];
+            screens.forEach(screenId => {
+                const screen = document.getElementById(screenId);
+                if (screen) screen.classList.add('hidden');
+            });
+            
+            const activeScreen = document.getElementById(`${newState}-screen`);
+            if (activeScreen) activeScreen.classList.remove('hidden');
+            
+            if (newState === 'menu') {
+                renderMenuScreen();
+                clearTimeout(appState.nextQuestionTimerId); 
+                const hintArea = document.getElementById('hint-area');
+                if (hintArea) hintArea.classList.add('hidden'); 
+                appState.sessionAchievements = []; // Reset session achievements
+            }
+        }
+
+        function startGame(mode) {
+            if (mode === 'study') {
+                const wrongMeds = Object.keys(appState.statistics.wrongAnswers || {})
+                    .filter(med => appState.statistics.wrongAnswers[med] > 0);
+                if (wrongMeds.length === 0) { 
+                    showModal("알림", "현재 약점인 약물이 없습니다. 적응형 학습을 통해 약점을 파악해보세요!", null, false); 
+                    return; 
+                }
+            }
+            
+            appState.gameMode = mode;
+            appState.sessionStats = { score: 0, correct: 0, incorrect: 0, questionNumber: 0, perfectSession: true, roundNumber: 1 };
+            appState.showFeedback = false;
+            appState.selectedAnswer = null;
+            
+            // Generate initial question pool
+            appState.questionPool = generateQuestionPool();
+            appState.currentQuestionIndex = 0;
+            
+            if (!appState.statistics) appState.statistics = getDefaultStatistics();
+            appState.statistics.sessionCount = (appState.statistics.sessionCount || 0) + 1;
+            appState.statistics.lastPlayDate = Date.now();
+            
+            setGameState('playing');
+            generateQuestion();
+        }
+
+        function renderMenuScreen() {
+            if (!appState.statistics) appState.statistics = getDefaultStatistics();
+            const stats = appState.statistics;
+            
+            // Basic stats
+            const accuracy = stats.totalQuestions > 0 ? Math.round((stats.correctAnswers / stats.totalQuestions) * 100) : 0;
+            const overallAccuracy = document.getElementById('overall-accuracy');
+            const totalQuestions = document.getElementById('total-questions');
+            const currentStreak = document.getElementById('current-streak');
+            const bestStreak = document.getElementById('best-streak');
+            
+            if (overallAccuracy) overallAccuracy.textContent = `${accuracy}%`;
+            if (totalQuestions) totalQuestions.textContent = stats.totalQuestions;
+            if (currentStreak) currentStreak.textContent = `${stats.streaks.current}회`;
+            if (bestStreak) bestStreak.textContent = `${stats.streaks.best}회`;
+            
+            // Level system
+            const level = getLearningLevel();
+            const levelBadge = document.getElementById('level-badge');
+            if (levelBadge) {
+                levelBadge.innerHTML = `
+                    <span class="${level.color} text-lg">⭐</span>
+                    <span class="text-slate-800 dark:text-slate-200 text-sm font-bold">Level ${level.level}</span>
+                    <span class="${level.textColor || 'text-blue-600 dark:text-blue-400'} text-xs">${level.title}</span>
+                `;
+            }
+            
+            // Achievement badges
+            renderAchievementBadges();
+            
+            // Study button state
+            const wrongMeds = Object.keys(stats.wrongAnswers || {}).filter(med => stats.wrongAnswers[med] > 0);
+            const weakCount = document.getElementById('weak-count');
+            const studyButton = document.getElementById('start-study');
+            
+            if (wrongMeds.length === 0) {
+                if (weakCount) weakCount.textContent = "약점 약물 없음";
+                if (studyButton) {
+                    studyButton.classList.add('opacity-60', 'cursor-not-allowed');
+                    studyButton.disabled = true;
+                }
+            } else {
+                if (weakCount) weakCount.textContent = `${wrongMeds.length}개 약점 집중 공략`;
+                if (studyButton) {
+                    studyButton.classList.remove('opacity-60', 'cursor-not-allowed');
+                    studyButton.disabled = false;
+                }
+            }
+            
+            renderTabContent();
+        }
+
+        function renderAchievementBadges() {
+            const achievementBadges = document.getElementById('achievement-badges');
+            const userAchievements = appState.statistics.achievements || [];
+            
+            if (!achievementBadges) return;
+            
+            if (userAchievements.length === 0) {
+                achievementBadges.classList.add('hidden');
+                return;
+            }
+            
+            achievementBadges.classList.remove('hidden');
+            achievementBadges.innerHTML = userAchievements.map(achievementId => {
+                const achievement = ACHIEVEMENTS[achievementId];
+                if (!achievement) return '';
+                
+                return `
+                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-100 dark:bg-amber-900 border border-amber-300 dark:border-amber-700 text-xs">
+                        <span>${achievement.icon}</span>
+                        <span class="text-amber-800 dark:text-amber-200 font-medium">${achievement.title}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderTabContent() {
+            if (!appState.statistics) appState.statistics = getDefaultStatistics();
+            const stats = appState.statistics;
+            
+            if (appState.activeTab === 'analytics') {
+                // Average reaction time
+                const allReactionTimes = Object.values(stats.reactionTimes || {}).flat();
+                const avgTime = allReactionTimes.length > 0 ? 
+                    (allReactionTimes.reduce((s, t) => s + t, 0) / allReactionTimes.length / 1000).toFixed(1) + 's' : 'N/A';
+                
+                const avgTimeEl = document.getElementById('avg-time');
+                const totalCorrectEl = document.getElementById('total-correct');
+                if (avgTimeEl) avgTimeEl.textContent = avgTime;
+                if (totalCorrectEl) totalCorrectEl.textContent = stats.correctAnswers || 0;
+                
+                // Fridge performance
+                renderFridgePerformance();
+                
+                // Learning patterns
+                renderLearningPatterns();
+            }
+            
+            if (appState.activeTab === 'study') {
+                renderStudyNotes();
+            }
+        }
+
+        function renderFridgePerformance() {
+            const fridgePerformanceEl = document.getElementById('fridge-performance');
+            if (!fridgePerformanceEl) return;
+            
+            let fridgePerformanceHTML = '';
+            Object.entries(fridgeData).forEach(([fridgeId, fridge]) => {
+                let totalAsked = 0, totalCorrect = 0;
+                (appState.statistics.learningCurve || []).forEach(item => {
+                    const medInfo = allMedicines.find(m => m.medicine === item.medicineName);
+                    if (medInfo && medInfo.fridgeId === parseInt(fridgeId)) { 
+                        totalAsked++; 
+                        if (item.correct) totalCorrect++; 
+                    }
+                });
+                
+                const accuracy = totalAsked > 0 ? Math.round((totalCorrect / totalAsked) * 100) : 0;
+                fridgePerformanceHTML += `
+                    <div class="flex items-center justify-between py-2">
+                        <div class="flex items-center gap-3">
+                            <div class="w-3 h-3 rounded-full bg-gradient-to-r ${fridge.color}"></div>
+                            <span class="text-slate-700 dark:text-slate-300 text-sm">${fridge.name}</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <div class="w-20 bg-slate-200 dark:bg-slate-700 rounded-full h-2.5">
+                                <div class="h-2.5 rounded-full bg-gradient-to-r ${fridge.color} transition-all duration-1000" 
+                                     style="width: ${accuracy}%;"></div>
+                            </div>
+                            <span class="text-slate-700 dark:text-slate-300 text-sm font-bold w-10 text-right">${accuracy}%</span>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            fridgePerformanceEl.innerHTML = fridgePerformanceHTML;
+        }
+
+        function renderLearningPatterns() {
+            const patterns = appState.statistics.studyPatterns || [];
+            const learningPatternDiv = document.getElementById('learning-pattern');
+            
+            if (!learningPatternDiv) return;
+            
+            if (patterns.length < 10) {
+                learningPatternDiv.innerHTML = '<p class="text-slate-500 dark:text-slate-400">더 많은 학습 데이터가 필요합니다.</p>';
+                return;
+            }
+            
+            // Analyze patterns
+            const hourlyAccuracy = {};
+            const dailyAccuracy = {};
+            
+            patterns.forEach(pattern => {
+                const hour = pattern.hour;
+                const day = pattern.dayOfWeek;
+                
+                if (!hourlyAccuracy[hour]) hourlyAccuracy[hour] = { total: 0, correct: 0 };
+                if (!dailyAccuracy[day]) dailyAccuracy[day] = { total: 0, correct: 0 };
+                
+                hourlyAccuracy[hour].total++;
+                dailyAccuracy[day].total++;
+                
+                if (pattern.correct) {
+                    hourlyAccuracy[hour].correct++;
+                    dailyAccuracy[day].correct++;
+                }
+            });
+            
+            // Find best performance times
+            let bestHour = null, bestHourAccuracy = 0;
+            Object.entries(hourlyAccuracy).forEach(([hour, data]) => {
+                if (data.total >= 5) {
+                    const accuracy = data.correct / data.total;
+                    if (accuracy > bestHourAccuracy) {
+                        bestHourAccuracy = accuracy;
+                        bestHour = hour;
+                    }
+                }
+            });
+            
+            const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+            let bestDay = null, bestDayAccuracy = 0;
+            Object.entries(dailyAccuracy).forEach(([day, data]) => {
+                if (data.total >= 3) {
+                    const accuracy = data.correct / data.total;
+                    if (accuracy > bestDayAccuracy) {
+                        bestDayAccuracy = accuracy;
+                        bestDay = day;
+                    }
+                }
+            });
+            
+            let patternHTML = '';
+            if (bestHour !== null) {
+                patternHTML += `<p>🕐 최고 성과 시간: ${bestHour}시 (${Math.round(bestHourAccuracy * 100)}%)</p>`;
+            }
+            if (bestDay !== null) {
+                patternHTML += `<p>📅 최고 성과 요일: ${dayNames[bestDay]}요일 (${Math.round(bestDayAccuracy * 100)}%)</p>`;
+            }
+            
+            const totalSessions = appState.statistics.sessionCount || 0;
+            const avgQuestionsPerSession = totalSessions > 0 ? 
+                Math.round(appState.statistics.totalQuestions / totalSessions) : 0;
+            
+            patternHTML += `<p>📊 평균 세션당 문제: ${avgQuestionsPerSession}개</p>`;
+            patternHTML += `<p>🏆 완료한 라운드: ${appState.statistics.roundsCompleted || 0}회</p>`;
+            
+            learningPatternDiv.innerHTML = patternHTML || '<p class="text-slate-500 dark:text-slate-400">패턴 분석 중...</p>';
+        }
+
+        function renderStudyNotes() {
+            const wrongMedsList = Object.entries(appState.statistics.wrongAnswers || {})
+                .filter(([, count]) => count > 0)
+                .sort(([,a], [,b]) => b - a);
+            
+            const wrongMedsListEl = document.getElementById('wrong-medicines-list');
+            if (!wrongMedsListEl) return;
+            
+            if (wrongMedsList.length === 0) {
+                wrongMedsListEl.innerHTML = `
+                    <div class="text-center py-8">
+                        <div class="text-6xl mb-4">🏆</div>
+                        <h3 class="text-xl font-bold text-slate-800 dark:text-slate-200 mb-2">완벽한 성과!</h3>
+                        <p class="text-slate-500 dark:text-slate-400 text-sm">현재 틀린 약물이 없습니다.</p>
+                    </div>
+                `;
+            } else {
+                let wrongMedsHTML = '<h3 class="text-slate-800 dark:text-slate-200 font-bold mb-3 text-sm">집중 학습 필요 약물</h3>';
+                
+                wrongMedsList.forEach(([medicine, count]) => {
+                    const medicineData = allMedicines.find(m => m.medicine === medicine);
+                    const spacedData = appState.statistics.spacedRepetition[medicine];
+                    const priority = calculateSpacedRepetitionPriority(medicine);
+                    
+                    const riskColor = count >= 3 ? 
+                        'bg-red-100 dark:bg-red-900/20 border-red-300 dark:border-red-700' : 
+                        count >= 2 ? 
+                        'bg-amber-100 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700' : 
+                        'bg-blue-100 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700';
+                    
+                    const riskTextColor = count >= 3 ? 
+                        'text-red-700 dark:text-red-300' : 
+                        count >= 2 ? 
+                        'text-amber-700 dark:text-amber-300' : 
+                        'text-blue-700 dark:text-blue-300';
+                    
+                    const riskLabel = count >= 3 ? '고위험' : count >= 2 ? '중위험' : '저위험';
+                    const urgency = priority > 7 ? ' (복습 필요)' : '';
+                    
+                    wrongMedsHTML += `
+                        <div class="${riskColor} rounded-xl p-3 text-slate-800 dark:text-slate-200 border shadow-sm mb-2">
+                            <div class="flex justify-between items-center">
+                                <div class="flex-1 min-w-0">
+                                    <div class="font-semibold text-sm break-words ${riskTextColor}">${medicine}</div>
+                                    <div class="text-xs text-slate-500 dark:text-slate-400">${medicineData?.fridgeName} (${medicineData?.category})</div>
+                                </div>
+                                <div class="text-right ml-2 flex-shrink-0">
+                                    <div class="font-black text-md ${riskTextColor}">${count}회 오답</div>
+                                    <div class="text-xs ${riskTextColor} opacity-80">${riskLabel}${urgency}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                wrongMedsListEl.innerHTML = wrongMedsHTML;
+            }
+        }
+
+        function renderPlayingScreen() {
+            if (!appState.currentQuestion) return;
+            
+            const gameModeEl = document.getElementById('game-mode');
+            const questionNumberEl = document.getElementById('question-number');
+            const sessionScoreEl = document.getElementById('session-score');
+            const correctCountEl = document.getElementById('correct-count');
+            const incorrectCountEl = document.getElementById('incorrect-count');
+            const accuracyRateEl = document.getElementById('accuracy-rate');
+            const medicineNameEl = document.getElementById('medicine-name');
+            
+            if (gameModeEl) gameModeEl.textContent = `🎯 라운드 ${appState.sessionStats.roundNumber} ${appState.gameMode === 'study' ? '약점 집중' : '적응형 학습'}`;
+            if (questionNumberEl) questionNumberEl.textContent = `${appState.sessionStats.questionNumber + 1}/${appState.questionsPerRound}문제`;
+            if (sessionScoreEl) sessionScoreEl.textContent = `${appState.sessionStats.score}점`;
+            if (correctCountEl) correctCountEl.textContent = appState.sessionStats.correct;
+            if (incorrectCountEl) incorrectCountEl.textContent = appState.sessionStats.incorrect;
+            
+            const sessionAccuracy = appState.sessionStats.questionNumber > 0 ? 
+                Math.round((appState.sessionStats.correct / appState.sessionStats.questionNumber) * 100) : 0;
+            if (accuracyRateEl) accuracyRateEl.textContent = `${sessionAccuracy}%`;
+            
+            if (medicineNameEl) medicineNameEl.textContent = appState.currentQuestion.medicine;
+            
+            // Render fridges
+            const fridgesContainer = document.getElementById('fridges-container');
+            if (!fridgesContainer) return;
+            
+            fridgesContainer.innerHTML = Object.entries(fridgeData).map(([fridgeId, fridge]) => {
+                const id = parseInt(fridgeId);
+                const isSelected = appState.selectedAnswer === id;
+                const isCorrectAnswer = appState.currentQuestion.fridgeId === id;
+                
+                let extraClasses = '';
+                if (appState.showFeedback) {
+                    if (isCorrectAnswer) {
+                        extraClasses = 'ring-4 ring-green-400 scale-105 shadow-lg';
+                    } else if (isSelected && !isCorrectAnswer) {
+                        extraClasses = 'ring-4 ring-red-400 scale-95 opacity-70';
+                    } else {
+                        extraClasses = 'opacity-60';
+                    }
+                }
+                
+                return `
+                    <button data-fridge="${id}" 
+                            class="fridge-button relative p-2.5 rounded-xl shadow-md bg-gradient-to-br ${fridge.color} text-white ${extraClasses}" 
+                            style="aspect-ratio: 5/4;" 
+                            ${appState.showFeedback ? 'disabled' : ''}>
+                        <div class="absolute inset-0 bg-black/15 rounded-xl"></div>
+                        <div class="relative z-10 h-full flex flex-col items-center justify-center text-center space-y-1">
+                            <div class="text-2xl">🧊</div> 
+                            <div class="w-2 h-2 bg-green-200/80 rounded-full animate-pulse"></div>
+                            <div class="bg-black/30 rounded-md px-2 py-1 w-[90%]">
+                                <div class="font-semibold text-xs truncate">${fridge.name}</div> 
+                                <div class="text-[10px] opacity-80 mt-0.5 truncate">${fridge.category}</div> 
+                            </div>
+                        </div>
+                        ${appState.showFeedback && isCorrectAnswer ? `
+                            <div class="absolute inset-0 bg-green-500/50 rounded-xl flex items-center justify-center z-20">
+                                <svg class="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+                                </svg>
+                            </div>
+                        ` : ''}
+                        ${appState.showFeedback && isSelected && !isCorrectAnswer ? `
+                            <div class="absolute inset-0 bg-red-500/50 rounded-xl flex items-center justify-center z-20">
+                                <svg class="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                                </svg>
+                            </div>
+                        ` : ''}
+                    </button>
+                `;
+            }).join('');
+
+            // Feedback area
+            const feedbackArea = document.getElementById('feedback-area');
+            if (feedbackArea) {
+                if (appState.showFeedback) {
+                    const isCorrect = appState.selectedAnswer === appState.currentQuestion.fridgeId;
+                    feedbackArea.innerHTML = `
+                        <div class="glass-card px-4 py-1.5 rounded-lg text-slate-800 dark:text-slate-200 font-bold text-xs text-center ${isCorrect ? 'bg-green-500/20 border-green-400' : 'bg-red-500/20 border-red-400'}">
+                            <div class="flex items-center gap-1.5 justify-center">
+                                <span>${isCorrect ? '✅' : '❌'}</span>
+                                <span>${isCorrect ? '정답!' : '정답:'} ${appState.currentQuestion.fridgeName}</span>
+                            </div>
+                        </div>
+                    `;
+                } else { 
+                    feedbackArea.innerHTML = ''; 
+                }
+            }
+
+            if (!(appState.showFeedback && appState.selectedAnswer !== appState.currentQuestion.fridgeId)) {
+                const hintArea = document.getElementById('hint-area');
+                if (hintArea) hintArea.classList.add('hidden');
+            }
+        }
+
+        function getLearningLevel() {
+            if (!appState.statistics) return { level: 1, title: "신입", color: "text-slate-400", textColor: "text-slate-500" };
+            
+            const { correctAnswers = 0, totalQuestions = 0 } = appState.statistics;
+            const score = correctAnswers + Math.floor(totalQuestions / 10);
+            
+            if (score < 15) return { level: 1, title: "신입", color: "text-gray-400", textColor: "text-gray-500" };
+            if (score < 40) return { level: 2, title: "견습생", color: "text-sky-500", textColor: "text-sky-600" };
+            if (score < 80) return { level: 3, title: "숙련가", color: "text-emerald-500", textColor: "text-emerald-600" };
+            if (score < 150) return { level: 4, title: "전문가", color: "text-violet-500", textColor: "text-violet-600" };
+            return { level: 5, title: "마스터", color: "text-amber-500", textColor: "text-amber-600" };
+        }
+
+        let currentModalCallback = null;
+
+        function showModal(title, content, callback = null, showCancel = true) {
+            const modal = document.getElementById('modal');
+            const modalTitle = document.getElementById('modal-title');
+            const modalContent = document.getElementById('modal-content');
+            const modalCancel = document.getElementById('modal-cancel');
+            
+            if (modalTitle) modalTitle.textContent = title;
+            if (modalContent) modalContent.textContent = content;
+            currentModalCallback = callback;
+            if (modalCancel) modalCancel.style.display = showCancel ? 'flex' : 'none';
+            if (modal) modal.classList.remove('hidden');
+        }
+
+        function hideModal() {
+            const modal = document.getElementById('modal');
+            if (modal) modal.classList.add('hidden');
+            currentModalCallback = null;
+        }
+
+        async function initializeApp() {
+            const loadingMessage = document.getElementById('loading-message');
+            const loadingProgress = document.getElementById('loading-progress');
+            
+            try {
+                if (loadingMessage) loadingMessage.textContent = "데이터 로딩 중..."; 
+                if (loadingProgress) loadingProgress.style.width = "30%";
+                await new Promise(resolve => setTimeout(resolve, 400));
+                
+                const savedData = loadData();
+                appState.statistics = savedData || getDefaultStatistics();
+                
+                if (loadingMessage) loadingMessage.textContent = "데이터 검증 및 UI 준비 중..."; 
+                if (loadingProgress) loadingProgress.style.width = "70%";
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                // Ensure all required fields exist
+                const defaultStats = getDefaultStatistics();
+                for (const key in defaultStats) { 
+                    if (appState.statistics[key] === undefined) appState.statistics[key] = defaultStats[key]; 
+                }
+                
+                if (typeof appState.statistics.streaks !== 'object') {
+                    appState.statistics.streaks = { current: 0, best: 0 };
+                }
+                
+                // Initialize spaced repetition data if missing
+                if (!appState.statistics.spacedRepetition) {
+                    appState.statistics.spacedRepetition = {};
+                }
+                
+                if (loadingMessage) loadingMessage.textContent = "준비 완료!"; 
+                if (loadingProgress) loadingProgress.style.width = "100%";
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                appState.initialized = true;
+                setGameState('menu');
+            } catch (error) {
+                console.error('Failed to initialize app:', error);
+                if (loadingMessage) loadingMessage.textContent = "초기화 중 오류가 발생했습니다.";
+            }
+        }
+        
+        // Event listeners setup
+        function setupEventListeners() {
+            try {
+                const menuButton = document.getElementById('menu-button');
+                const sidebarMenu = document.getElementById('sidebar-menu');
+                const sidebarOverlay = document.getElementById('sidebar-overlay');
+                const sidebarCloseButton = document.getElementById('sidebar-close-button');
+                const menuIconOpen = document.getElementById('menu-icon-open');
+                const menuIconClose = document.getElementById('menu-icon-close');
+
+                function openSidebar() {
+                    if (sidebarMenu && sidebarOverlay && menuIconOpen && menuIconClose) {
+                        sidebarMenu.classList.add('active');
+                        sidebarOverlay.classList.add('active');
+                        menuIconOpen.classList.add('hidden');
+                        menuIconClose.classList.remove('hidden');
+                        appState.isSidebarOpen = true;
+                    }
+                }
+
+                function closeSidebar() {
+                    if (sidebarMenu && sidebarOverlay && menuIconOpen && menuIconClose) {
+                        sidebarMenu.classList.remove('active');
+                        sidebarOverlay.classList.remove('active');
+                        menuIconOpen.classList.remove('hidden');
+                        menuIconClose.classList.add('hidden');
+                        appState.isSidebarOpen = false;
+                    }
+                }
+
+                if (menuButton) {
+                    menuButton.addEventListener('click', () => {
+                        if (appState.isSidebarOpen) closeSidebar();
+                        else openSidebar();
+                    });
+                }
+                
+                if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
+                if (sidebarCloseButton) sidebarCloseButton.addEventListener('click', closeSidebar);
+
+                // Game buttons
+                const startInfinite = document.getElementById('start-infinite');
+                const startStudy = document.getElementById('start-study');
+                if (startInfinite) startInfinite.addEventListener('click', () => startGame('infinite'));
+                if (startStudy) startStudy.addEventListener('click', () => startGame('study'));
+                
+                // Tab buttons
+                const tabDashboard = document.getElementById('tab-dashboard');
+                const tabAnalytics = document.getElementById('tab-analytics');
+                const tabStudy = document.getElementById('tab-study');
+                if (tabDashboard) tabDashboard.addEventListener('click', () => switchTab('dashboard'));
+                if (tabAnalytics) tabAnalytics.addEventListener('click', () => switchTab('analytics'));
+                if (tabStudy) tabStudy.addEventListener('click', () => switchTab('study'));
+                
+                // Sidebar actions
+                const sidebarResetData = document.getElementById('sidebar-reset-data');
+                if (sidebarResetData) {
+                    sidebarResetData.addEventListener('click', () => {
+                        closeSidebar(); 
+                        showModal(
+                            "⚠️ 데이터 초기화", 
+                            "정말로 모든 학습 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.", 
+                            () => {
+                                appState.statistics = getDefaultStatistics();
+                                persistentData = null;
+                                saveData();
+                                renderMenuScreen();
+                                setTimeout(() => showModal("✅ 완료", "모든 데이터가 초기화되었습니다.", null, false), 50); 
+                            }
+                        );
+                    });
+                }
+
+                const sidebarAppInfo = document.getElementById('sidebar-app-info');
+                if (sidebarAppInfo) {
+                    sidebarAppInfo.addEventListener('click', () => {
+                        closeSidebar();
+                        showModal("MedAI 학습 시스템", "버전 4.15\n의료진의 약물 위치 학습을 돕기 위해 개발되었습니다.\n\n새로운 기능:\n• 라운드 시스템 (20문제/라운드)\n• 향상된 햅틱 피드백\n• 간격 반복 학습법 적용\n• 더 스마트한 문제 선택 알고리즘\n• 향상된 틀린 문제 추적", null, false);
+                    });
+                }
+
+                const exitGame = document.getElementById('exit-game');
+                if (exitGame) {
+                    exitGame.addEventListener('click', () => {
+                        showModal("게임 종료", "정말로 현재 게임을 종료하고 메뉴로 돌아가시겠습니까?", () => setGameState('menu'));
+                    });
+                }
+                
+                // Fridge buttons
+                const fridgesContainer = document.getElementById('fridges-container');
+                if (fridgesContainer) {
+                    fridgesContainer.addEventListener('click', (e) => {
+                        const button = e.target.closest('.fridge-button');
+                        if (button && !button.disabled) {
+                            triggerHapticFeedback('tap');
+                            handleAnswer(parseInt(button.dataset.fridge));
+                        }
+                    });
+                }
+                
+                // Modal buttons
+                const modalConfirm = document.getElementById('modal-confirm');
+                const modalCancel = document.getElementById('modal-cancel');
+
+                if (modalCancel) {
+                    modalCancel.addEventListener('click', hideModal);
+                }
+                if (modalConfirm) {
+                    modalConfirm.addEventListener('click', () => { 
+                        if (currentModalCallback) currentModalCallback(); 
+                        hideModal(); 
+                    });
+                }
+            } catch (error) {
+                console.error('Error setting up event listeners:', error);
+            }
+        }
+
+        function switchTab(tabName) {
+            appState.activeTab = tabName;
+            
+            // Update tab buttons
+            const tabButtons = document.querySelectorAll('.tab-button');
+            tabButtons.forEach(btn => {
+                btn.classList.remove('text-slate-900', 'dark:text-slate-100', 'bg-white', 'dark:bg-slate-800', 'shadow-md');
+                btn.classList.add('text-slate-500', 'dark:text-slate-400', 'hover:text-blue-600', 'dark:hover:text-blue-400');
+            });
+            
+            const activeTabButton = document.getElementById(`tab-${tabName}`);
+            if (activeTabButton) {
+                activeTabButton.classList.remove('text-slate-500', 'dark:text-slate-400', 'hover:text-blue-600', 'dark:hover:text-blue-400');
+                activeTabButton.classList.add('text-slate-900', 'dark:text-slate-100', 'bg-white', 'dark:bg-slate-800', 'shadow-md');
+            }
+            
+            // Show/hide content
+            const dashboardContent = document.getElementById('dashboard-content');
+            const analyticsContent = document.getElementById('analytics-content');
+            const studyContent = document.getElementById('study-content');
+            
+            if (dashboardContent) dashboardContent.classList.toggle('hidden', tabName !== 'dashboard');
+            if (analyticsContent) analyticsContent.classList.toggle('hidden', tabName !== 'analytics');
+            if (studyContent) studyContent.classList.toggle('hidden', tabName !== 'study');
+            
+            renderTabContent();
+        }
+
+        // Initialize app when DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            try {
+                setupEventListeners();
+                initializeApp();
+            } catch (error) {
+                console.error('Error during app initialization:', error);
+            }
+        });
+    </script>
+</body>
+</html>
