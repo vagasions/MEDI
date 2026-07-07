@@ -40,6 +40,21 @@
       parts.push({ name: `고장모드(차순위): ${second.mode.name}`, penalty: clamp(second.score * 15, 0, 15), detail: `일치도 ${(second.score * 100).toFixed(0)}%` });
     }
 
+    // 2b) 최신 기법 합의 (iForest ∧ ECOD) — 단, 고전 지표(SPE 또는 고장모드)가
+    // 동조할 때만 감점. 새 운전점 이동(novelty)을 고장으로 오인하는 것을 막는다.
+    if (analysis.adv) {
+      const consensus = Math.min(analysis.adv.iforest.recentFrac, analysis.adv.ecod.recentFrac);
+      const speAgree = analysis.mv && analysis.mv.speViolFrac > 0.1;
+      const fmAgree = top && top.score > 0.3;
+      if (consensus > 0.2 && (speAgree || fmAgree)) {
+        parts.push({
+          name: '다중 검출기 합의 이상 (iForest+ECOD)',
+          penalty: clamp(consensus * 24, 0, 12),
+          detail: `최근 초과율 iForest ${(analysis.adv.iforest.recentFrac * 100).toFixed(0)}% · ECOD ${(analysis.adv.ecod.recentFrac * 100).toFixed(0)}%`,
+        });
+      }
+    }
+
     // 3) 설계한계 접근/이탈 (high/low)
     for (const [tagId, d] of Object.entries(analysis.tagDiag || {})) {
       const lim = Math.max(d.high || 0, d.low || 0);

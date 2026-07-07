@@ -40,9 +40,16 @@
   // ---------- ISO 14224 기반 설비 클래스 ----------
   const EQUIP_CLASSES = {
     CP: { ko: '원심펌프', en: 'Centrifugal pump', iso: 'PU' },
-    CO: { ko: '압축기', en: 'Compressor', iso: 'CO' },
+    CO: { ko: '원심압축기', en: 'Centrifugal compressor', iso: 'CO' },
+    RC: { ko: '왕복동압축기', en: 'Reciprocating compressor', iso: 'CO' },
     EM: { ko: '전동기', en: 'Electric motor', iso: 'EM' },
+    VF: { ko: '인버터(VFD)', en: 'Frequency converter', iso: 'FC' },
+    TR: { ko: '변압기', en: 'Power transformer', iso: 'PT' },
+    CV: { ko: '제어밸브', en: 'Control valve', iso: 'VA*' }, // 밸브 클래스 코드는 표준 원문 확인 필요
     HE: { ko: '열교환기', en: 'Heat exchanger', iso: 'HE' },
+    DC: { ko: '증류탑', en: 'Distillation column', iso: 'VE' },
+    FH: { ko: '가열로', en: 'Fired heater', iso: 'HB' },
+    CT: { ko: '냉각탑', en: 'Cooling tower', iso: '(시스템)' }, // ISO 14224에 전용 클래스 없음 — 팬은 BL
     VE: { ko: '용기/드럼', en: 'Vessel', iso: 'VE' },
   };
 
@@ -177,8 +184,8 @@
         id: 'EM-WIND', name: '권선 절연 열화/과열', iso14224: 'OHE (Overheating)',
         mechanism: '절연물 열화, 냉각 불량, 과부하',
         symptoms: [
-          { role: 'winding_temp', pattern: 'up', w: 3 },
-          { role: 'motor_current', pattern: 'up', w: 2 },
+          { role: 'wt_residual', pattern: 'up', w: 4 },
+          { role: 'winding_temp', pattern: 'up', w: 1 },
           { role: 'motor_current', pattern: 'variance', w: 1 },
         ],
         causes: ['냉각팬/필터 막힘', '전압 불평형', '과부하 운전', '절연 수명'],
@@ -198,6 +205,310 @@
         leadTime: '수 주~수개월. 진동 추세 상승 시 계획 교체.',
       },
     ],
+    RC: [
+      {
+        id: 'RC-VLV', name: '실린더 밸브 누설', iso14224: 'INL',
+        mechanism: '밸브 플레이트/스프링 피로, 이물·액적 유입 — 왕복동 압축기 비계획 정지 원인 1위(EFRC 조사)',
+        symptoms: [
+          { role: 'adiabatic_resid', pattern: 'up', w: 3 },
+          { role: 'discharge_temp', pattern: 'up', w: 3 },
+          { role: 'capacity_flow', pattern: 'down', w: 2 },
+        ],
+        causes: ['밸브 피로 파손', '액체 슬러그 유입', '이물질', '맥동/사이징 부적합'],
+        actions: ['단열 토출온도 잔차(T_s·r^((k-1)/k) 대비) 확인', '실린더별 밸브캡 온도 측정', '밸브 교체 및 근본원인(액적·맥동) 조사'],
+        leadTime: '수일~수주. 방치 시 로드 반전 상실 → 크로스헤드 핀 손상 위험.',
+      },
+      {
+        id: 'RC-RING', name: '피스톤 링/라이더 밴드 마모', iso14224: 'LOO',
+        mechanism: '링 블로바이로 체적효율 저하',
+        symptoms: [
+          { role: 'capacity_flow', pattern: 'down', w: 3 },
+          { role: 'discharge_temp', pattern: 'up', w: 1 },
+        ],
+        causes: ['무급유 운전', '오염 가스', '정렬 불량'],
+        actions: ['체적효율 추이 확인', '로드드롭(설치 시) 확인', '오버홀 계획'],
+        leadTime: '수주~수개월 완만.',
+      },
+      {
+        id: 'RC-PACK', name: '로드 패킹 마모/누설', iso14224: 'ELP',
+        mechanism: '패킹 링 마모 — 벤트 유량 증가(신품 5~10 SCFH → 마모 100+ SCFH)',
+        symptoms: [
+          { role: 'packing_temp', pattern: 'up', w: 3 },
+        ],
+        causes: ['로드 마모/스코어링', '윤활 불량', '정렬 불량'],
+        actions: ['패킹 벤트 유량/디스턴스피스 압력 확인', '가스 검지', '패킹 교체 계획'],
+        leadTime: '수주~수개월, 파손 시 계단식 악화. 인화성 가스 누출 — 안전 주의.',
+      },
+    ],
+    VF: [
+      {
+        id: 'VF-COOL', name: '냉각 열화 (팬/필터/방열핀)', iso14224: 'OHE',
+        mechanism: '냉각팬 베어링 마모·정지, 필터 막힘, 방열핀 오염 → 방열판 온도 상승',
+        symptoms: [
+          { role: 'hs_residual', pattern: 'up', w: 3 },
+          { role: 'heatsink_temp', pattern: 'up', w: 2 },
+          { role: 'heatsink_temp', pattern: 'high', w: 2 },
+        ],
+        causes: ['냉각팬 수명(약 6년 주기 교체 권고)', '필터/방열핀 분진·유막 오염', '판넬 냉각 불량'],
+        actions: ['부하 보정 방열판 온도 잔차 확인', '팬 상태·수명 카운터 확인', '필터 청소 후 잔차 복귀 확인'],
+        leadTime: '팬 마모는 수주~수개월 완만, 팬 정지는 부하 시 수 시간 내 OH 트립.',
+      },
+      {
+        id: 'VF-CAP', name: 'DC 버스 커패시터 노화', iso14224: 'PDE',
+        mechanism: '전해액 증발로 ESR↑/정전용량↓ — 리플은 히스토리안으로 안 보이므로 수명 카운터·UV 트립 통계로 감시',
+        symptoms: [
+          { role: 'dc_bus_voltage', pattern: 'variance', w: 3 },
+          { role: 'dc_bus_voltage', pattern: 'down', w: 2 },
+        ],
+        causes: ['고온 가속 노화', '수명 도달(전해 커패시터 ~10년)'],
+        actions: ['드라이브 자체 수명 카운터(U4-05 등) 확인 — 80~90%에서 교체 계획', '동일 모선 형제 드라이브 대비 저전압 트립률 비교'],
+        leadTime: '수개월~수년 완만, 말기 급격(벤팅/단락) 가능.',
+      },
+      {
+        id: 'VF-LOAD', name: '구동계 과부하/기계측 이상', iso14224: 'HIO',
+        mechanism: '피구동기 마모·오염으로 "동일 주파수에서" 전류 증가 (부하 상승과의 감별은 주파수-전류 잔차)',
+        symptoms: [
+          { role: 'if_residual', pattern: 'up', w: 4 },
+          { role: 'heatsink_temp', pattern: 'up', w: 1 },
+        ],
+        causes: ['피구동 펌프/팬 마모·오염', '공정 조건 변화', '커플링 이상'],
+        actions: ['주파수-전류 잔차 확인 → 기계/공정팀 통보', '모터·부하측 점검'],
+        leadTime: '수일~수주.',
+      },
+    ],
+    TR: [
+      {
+        id: 'TR-COOL', name: '냉각 성능 저하 (라디에이터/팬)', iso14224: 'OHE',
+        mechanism: '라디에이터 오염·팬 고장으로 동일 부하에서 유온 상승 (IEEE C57.91 열모델 잔차로 검출)',
+        symptoms: [
+          { role: 'cool_residual', pattern: 'up', w: 3 },
+          { role: 'top_oil_temp', pattern: 'up', w: 2 },
+          { role: 'winding_hotspot', pattern: 'up', w: 2 },
+        ],
+        causes: ['냉각팬/펌프 고장', '라디에이터 핀 오염(분진+유막)', '라디에이터 밸브 잠김'],
+        actions: ['팬 기동 시 유온 하강 여부 확인', '라디에이터 청소/팬 정비', '수리 전 부하 제한'],
+        leadTime: '팬 트립은 계단식, 오염은 수주~수개월 완만.',
+      },
+      {
+        id: 'TR-AGING', name: '절연 열화 가속 (과부하)', iso14224: 'OHE',
+        mechanism: '핫스팟 110°C 초과 시 절연수명 가속 (6~7°C당 수명 절반 — IEEE C57.91)',
+        symptoms: [
+          { role: 'winding_hotspot', pattern: 'high', w: 3 },
+          { role: 'winding_hotspot', pattern: 'up', w: 2 },
+          { role: 'load_current', pattern: 'up', w: 2 },
+        ],
+        causes: ['지속 과부하', '고외기온', '냉각 열화 동반'],
+        actions: ['C57.91 부하 한계 준수', '노화 가속계수 F_AA 누적 관리', '랩 DGA·퓨란 분석'],
+        leadTime: '수년 만성 — 추세 감시가 핵심.',
+      },
+      {
+        id: 'TR-OIL', name: '누유/유위 저하', iso14224: 'ELU',
+        mechanism: '가스켓/라디에이터/용접부 누유 (유위는 유온에 따라 변하므로 온도 보정 후 판정)',
+        symptoms: [
+          { role: 'oil_level_c', pattern: 'down', w: 3 },
+          { role: 'oil_level', pattern: 'down', w: 2 },
+        ],
+        causes: ['가스켓 열화', '부식', '밸브 누설'],
+        actions: ['누유 지점 탐색', '탈기유 보충', '부흐홀츠 상태 확인'],
+        leadTime: '수주~수개월. 활선부 노출 전 조치 필수.',
+      },
+      {
+        id: 'TR-ARC', name: '내부 방전/아크 (가스 발생)', iso14224: 'BRD',
+        mechanism: 'H2 급증=부분방전, C2H2=아크 (IEEE C57.104/IEC 60599)',
+        symptoms: [
+          { role: 'h2_gas', pattern: 'up', w: 3 },
+          { role: 'h2_gas', pattern: 'spike', w: 3 },
+        ],
+        causes: ['절연 파괴 진행', '접속부 이완', '관통 고장 후 손상'],
+        actions: ['**즉시 정밀 DGA 랩 분석**', '증가율(ppm/day) 감시 강화', '보호계전 동작 시 재투입 금지'],
+        leadTime: '가스 발생 시작 후 수 시간~수 주 — 최우선 대응.',
+      },
+    ],
+    CV: [
+      {
+        id: 'CV-STIC', name: '스틱션 (고착-미끄럼)', iso14224: 'DOP',
+        mechanism: '패킹 과체결·스템 부착물로 정지마찰↑ → AUTO에서 지속 리미트사이클. OP-개도 편차가 데드밴드 폭으로 "진동"하는 것이 핵심 시그니처 (편차의 일방향 증가는 액추에이터 고장)',
+        symptoms: [
+          { role: 'pos_gap', pattern: 'variance', w: 3 },
+          { role: 'pos_gap', pattern: 'spike', w: 2 },
+          { role: 'pos_gap', pattern: 'up', w: 1 },
+          { role: 'controller_output', pattern: 'spike', w: 1 },
+          { role: 'loop_osc', pattern: 'up', w: 1 },
+        ],
+        causes: ['패킹 과체결/열화', '스템 부식·부착물', '장기 정지 후 고착'],
+        actions: ['수동 스텝 테스트로 확인(데드밴드+슬립 점프)', '포지셔너 스틱션 보상', '터닝 시 패킹 정비'],
+        leadTime: '수주~수개월 완만 악화, 정지 후 재기동 시 심화.',
+      },
+      {
+        id: 'CV-ACT', name: '액추에이터/공기공급 이상', iso14224: 'DOP',
+        mechanism: '다이어프램 누기·공기압 저하로 OP-실개도 편차가 지속 확대 (제어기는 이를 쫓아 OP 상승)',
+        symptoms: [
+          { role: 'pos_gap', pattern: 'up', w: 3 },
+          { role: 'controller_output', pattern: 'up', w: 2 },
+        ],
+        absent: [
+          { role: 'pos_gap', pattern: 'variance', w: 4 }, // 편차가 "진동"하면 스틱션 — 액추에이터 고장 아님
+          { role: 'pos_gap', pattern: 'spike', w: 2 },
+        ],
+        causes: ['계장공기 압력 저하', '다이어프램/씰 누기', 'I/P 드리프트'],
+        actions: ['공기공급 압력 확인', '포지셔너 진단(압력) 확인', '다이어프램 교체'],
+        leadTime: '누기 시작 후 수일 내 악화 가능.',
+      },
+      {
+        id: 'CV-EROS', name: '트림 마모/침식', iso14224: 'INL',
+        mechanism: '캐비테이션·플래싱·슬러리로 트림 침식 → 동일 개도에서 유량 증가(특성 변화)',
+        symptoms: [
+          { role: 'flow_op_resid', pattern: 'up', w: 3 },
+          { role: 'flow_pv', pattern: 'variance', w: 1 },
+        ],
+        causes: ['캐비테이션/플래싱', '침식성 유체', '트림 재질 부적합'],
+        actions: ['기준 운전점 OP 추이 확인', '오프라인 밸브 시그니처 테스트', '트림 경화/재선정'],
+        leadTime: '수개월. 침식 채널 형성 후 가속.',
+      },
+      {
+        id: 'CV-PLUG', name: '막힘/개도 부족', iso14224: 'PLU',
+        mechanism: '이물·왁스·수화물로 유로 축소 → 동일 유량에 더 큰 개도 필요',
+        symptoms: [
+          { role: 'flow_op_resid', pattern: 'down', w: 3 },
+          { role: 'controller_output', pattern: 'up', w: 2 },
+        ],
+        causes: ['이물질', '스케일/왁스', '전단 스트레이너 통과물'],
+        actions: ['플러싱', '스트레이너 점검', 'OP 포화(>95%) 감시'],
+        leadTime: '수일~수주.',
+      },
+    ],
+    DC: [
+      {
+        id: 'DC-FLOOD', name: '플러딩 (범람)', iso14224: 'PDE',
+        mechanism: '증기/액 부하 초과로 트레이 액면 상승 — dP 급상승 + dP 변동성 상승이 전조(수십 분 선행)',
+        symptoms: [
+          { role: 'dp_top', pattern: 'up', w: 3 },
+          { role: 'dp_top', pattern: 'variance', w: 3 },
+          { role: 'profile_dt', pattern: 'down', w: 2 },
+          { role: 'dp_bottom', pattern: 'up', w: 1 },
+        ],
+        causes: ['리보일러 과부하', '오염으로 용량 감소', '포밍', '트레이 손상'],
+        actions: ['리보일러 듀티/피드 감량', 'dP 변동성(고역통과 σ) 감시', '감마스캔 검토', '포밍 시 소포제'],
+        leadTime: '부하 변경 후 수십 분~수 시간. dP σ 상승이 조기 경보.',
+      },
+      {
+        id: 'DC-FOUL', name: '내부 오염 (트레이/충전물)', iso14224: 'PLU',
+        mechanism: '중합물·염·부식생성물 침적 → 동일 부하에서 dP 완만 상승, 저부하에서도 조기 플러딩',
+        symptoms: [
+          { role: 'dp_norm', pattern: 'up', w: 3 },
+        ],
+        causes: ['중합성 성분', '부식 생성물', '염 석출'],
+        actions: ['부하 정규화 dP 추이 확인', '세정 계획 수립', '운전 여유 재평가'],
+        leadTime: '수주~수개월 완만.',
+      },
+      {
+        id: 'DC-WEEP', name: '위핑/덤핑 (저부하 누액)', iso14224: 'PDE',
+        mechanism: '증기 부하 부족으로 트레이 구멍으로 액 누출 → 분리효율 저하',
+        symptoms: [
+          { role: 'dp_top', pattern: 'down', w: 2 },
+          { role: 'profile_dt', pattern: 'down', w: 2 },
+        ],
+        causes: ['턴다운 이하 운전', '리보일 부족'],
+        actions: ['리보일/환류 증가', '운전범위 조정'],
+        leadTime: '즉시 발생, 가역적.',
+      },
+      {
+        id: 'DC-DMG', name: '트레이 손상/붕괴', iso14224: 'STD',
+        mechanism: '압력 서지·수격으로 트레이 이탈 — 손상 구간 dP 급락 + 온도구배 소실',
+        symptoms: [
+          { role: 'dp_top', pattern: 'down', w: 3 },
+          { role: 'profile_dt', pattern: 'down', w: 3 },
+        ],
+        causes: ['수분 유입 급증(수격)', '압력 서지', '슬러그'],
+        actions: ['감마스캔', '이력 dP 대비 확인', '터닝 시 보수'],
+        leadTime: '사건성(급격) 후 지속.',
+      },
+    ],
+    FH: [
+      {
+        id: 'FH-COKE', name: '튜브 내부 코킹', iso14224: 'PLU',
+        mechanism: '중질 성분 코크 침적 → 동일 COT에 TMT 상승(전형 ~1°F/day), 연료 증가 (API RP 573)',
+        symptoms: [
+          { role: 'tmt', pattern: 'up', w: 3 },
+          { role: 'tmt_cot_gap', pattern: 'up', w: 3 },
+          { role: 'fuel_flow', pattern: 'up', w: 2 },
+          { role: 'tmt', pattern: 'high', w: 2 },
+          { role: 'stack_temp', pattern: 'up', w: 1 },
+        ],
+        causes: ['저유속 패스', '화염 접촉(임핀지먼트)', '중질 피드'],
+        actions: ['TMT-설계한계(API 530 DMT) 마진 관리', '패스별 유량 밸런싱', '디코킹(스팀-에어/피깅) 계획'],
+        leadTime: '수주~수개월. TMT가 런렝스 종료 기준.',
+      },
+      {
+        id: 'FH-O2', name: '저산소 불완전연소', iso14224: 'PDE',
+        mechanism: '과잉공기 부족 → CO 급증(브레이크스루), 노내 불안정 — 안전 직결',
+        symptoms: [
+          { role: 'o2', pattern: 'down', w: 3 },
+          { role: 'o2', pattern: 'low', w: 3 },
+        ],
+        causes: ['과화력', '공기 레지스터/댐퍼 부적정', '연료 조성 급변'],
+        actions: ['**즉시 O2 2~3%로 복귀** (CO 브레이크스루 마진 확보)', 'API RP 556 인터록 확인', '버너 점검'],
+        leadTime: '수 분 — 안전 최우선.',
+      },
+      {
+        id: 'FH-DRAFT', name: '드래프트 이상 (양압/과드래프트)', iso14224: 'PDE',
+        mechanism: '아치 양압 시 고온 배가스 누출(위험), 과드래프트 시 공기 침입으로 효율 저하',
+        symptoms: [
+          { role: 'draft', pattern: 'high', w: 3 },
+          { role: 'draft', pattern: 'up', w: 2 },
+          { role: 'draft', pattern: 'variance', w: 2 },
+        ],
+        causes: ['스택 댐퍼 위치', '팬(FD/ID) 이상', '외기 급변'],
+        actions: ['아치 드래프트 −0.05~−0.15 inH2O 유지', '양압 시 즉시 조치', '댐퍼/팬 점검'],
+        leadTime: '수 분 — 양압은 즉시 대응.',
+      },
+      {
+        id: 'FH-CONV', name: '대류부 오염', iso14224: 'PLU',
+        mechanism: '수트/재 침적으로 대류부 흡수 저하 → 스택온도 상승, 효율 저하(스택 22°C당 ~1%)',
+        symptoms: [
+          { role: 'stack_temp', pattern: 'up', w: 3 },
+          { role: 'fuel_flow', pattern: 'up', w: 1 },
+        ],
+        causes: ['수트 침적', '핀 열화'],
+        actions: ['수트블로잉/워터워시', '지거트식 효율 추이 확인'],
+        leadTime: '수개월 완만.',
+      },
+    ],
+    CT: [
+      {
+        id: 'CT-FILL', name: '충전재 오염/스케일', iso14224: 'PDE',
+        mechanism: '수질 불량·생물막으로 충전재 전열 저하 → 접근온도차(냉수-습구) 상승. 팬으로 회복 불가',
+        symptoms: [
+          { role: 'approach', pattern: 'up', w: 3 },
+          { role: 'effectiveness', pattern: 'down', w: 2 },
+        ],
+        causes: ['고농축(COC 과다)', '수처리 불량', '생물막/조류', '비산 이물'],
+        actions: ['수처리(농축배수·약품) 감사', '블로다운 증가', '충전재 세정/교체 계획'],
+        leadTime: '수주~수개월 완만.',
+      },
+      {
+        id: 'CT-AIR', name: '공기유량 저하 (벨트/피치/팬)', iso14224: 'LOO',
+        mechanism: '벨트 슬립·블레이드 피치 이탈로 풍량 감소 (팬동력 ∝ 풍량³ 큐브법칙 잔차로 검출)',
+        symptoms: [
+          { role: 'fan_power', pattern: 'down', w: 2 },
+          { role: 'approach', pattern: 'up', w: 3 },
+        ],
+        causes: ['벨트 마모/슬립', '블레이드 피치 드리프트', '기어박스 이상'],
+        actions: ['벨트 장력/피치 점검', '팬동력 큐브법칙 잔차 확인', '기어박스 오일 분석'],
+        leadTime: '벨트는 수일 내 급진행 가능.',
+      },
+      {
+        id: 'CT-DIST', name: '살수 분배 불량', iso14224: 'PLU',
+        mechanism: '노즐 막힘·온수분배조 손상으로 편류 → 팬·유량 정상인데 접근온도차 상승',
+        symptoms: [
+          { role: 'approach', pattern: 'up', w: 2 },
+          { role: 'range', pattern: 'down', w: 2 },
+        ],
+        causes: ['노즐 막힘(이물/스케일)', '분배조 파손'],
+        actions: ['분배 데크 육안점검/청소', '노즐 교체'],
+        leadTime: '수주.',
+      },
+    ],
     VE: [],
   };
 
@@ -205,7 +516,7 @@
   // tags[].role 은 FAILURE_LIB의 symptom role과 매칭된다.
   function defaultModel() {
     return {
-      version: 2,
+      version: 3,
       site: { id: 'YC-PC', name: '여천 석유화학단지 (데모)', standard: 'ISA-95 / ISO 14224' },
       areas: [
         {
@@ -243,6 +554,16 @@
                     { id: 'TT-117', role: 'winding_temp', desc: '모터 권선 온도', unit: '°C', lo: 50, hi: 130 },
                   ],
                 },
+                {
+                  id: 'FV-101', name: 'FV-101 나프타 유량 제어밸브',
+                  class: 'CV', criticality: 'B',
+                  design: { size: '6"', characteristic: 'EQ%', failAction: 'FC' },
+                  tags: [
+                    { id: 'FT-431', role: 'flow_pv', desc: '유량 (PV)', unit: 'm³/h', lo: 60, hi: 160 },
+                    { id: 'ZT-432', role: 'valve_position', desc: '밸브 개도', unit: '%', lo: 5, hi: 95 },
+                    { id: 'FY-433', role: 'controller_output', desc: '제어기 출력 (OP)', unit: '%', lo: 5, hi: 95 },
+                  ],
+                },
               ],
             },
           ],
@@ -267,6 +588,19 @@
                     { id: 'IT-206', role: 'motor_current', desc: '구동모터 전류', unit: 'A', lo: 200, hi: 460 },
                   ],
                 },
+                {
+                  id: 'C-202', name: 'C-202 부스터 왕복동압축기',
+                  class: 'RC', criticality: 'A',
+                  design: { ratedFlow: 950, maxDischTemp: 150, k: 1.25, stages: 1 },
+                  tags: [
+                    { id: 'PT-471', role: 'suction_pressure', desc: '흡입 압력', unit: 'kg/cm²', lo: 2.0, hi: 5.0 },
+                    { id: 'PT-472', role: 'discharge_pressure', desc: '토출 압력', unit: 'kg/cm²', lo: 9, hi: 16 },
+                    { id: 'TT-473', role: 'suction_temp', desc: '흡입 온도', unit: '°C', lo: 20, hi: 50 },
+                    { id: 'TT-474', role: 'discharge_temp', desc: '토출 온도', unit: '°C', lo: 70, hi: 150 },
+                    { id: 'FT-475', role: 'capacity_flow', desc: '토출 유량', unit: 'Nm³/h', lo: 600, hi: 1100 },
+                    { id: 'TT-476', role: 'packing_temp', desc: '로드 패킹 온도', unit: '°C', lo: 40, hi: 120 },
+                  ],
+                },
               ],
             },
           ],
@@ -288,6 +622,106 @@
                     { id: 'TT-304', role: 'cold_out', desc: '냉각수 출구온도(Tube)', unit: '°C', lo: 28, hi: 48 },
                     { id: 'FT-305', role: 'hot_flow', desc: '급냉수 유량', unit: 'm³/h', lo: 400, hi: 900 },
                     { id: 'PDT-306', role: 'dp', desc: '튜브측 차압', unit: 'kg/cm²', lo: 0.1, hi: 0.8 },
+                  ],
+                },
+                {
+                  id: 'CT-601', name: 'CT-601 냉각탑 (기계통풍 2셀)',
+                  class: 'CT', criticality: 'B',
+                  design: { designApproach: 5, designRange: 8, cells: 2 },
+                  tags: [
+                    { id: 'TT-461', role: 'hot_water', desc: '온수(리턴) 온도', unit: '°C', lo: 18, hi: 45 },
+                    { id: 'TT-462', role: 'cold_water', desc: '냉수(공급) 온도', unit: '°C', lo: 10, hi: 35 },
+                    { id: 'TT-463', role: 'ambient_temp', desc: '외기 온도(습구 프록시)', unit: '°C' },
+                    { id: 'JT-464', role: 'fan_power', desc: '팬 전력 (합산)', unit: 'kW', lo: 20, hi: 130 },
+                    { id: 'FT-465', role: 'circ_flow', desc: '순환수 유량', unit: 'm³/h', lo: 1200, hi: 2400 },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'A-400', name: '전기 구역 (Electrical)',
+          units: [
+            {
+              id: 'U-401', name: '수배전/구동 유닛',
+              assets: [
+                {
+                  id: 'TR-101', name: 'TR-101 주변압기 (22.9kV/6.6kV)',
+                  class: 'TR', criticality: 'A',
+                  design: { ratedMVA: 15, ratedCurrent: 1300, coolClass: 'ONAF', hotspotLimit: 110 },
+                  tags: [
+                    { id: 'TT-421', role: 'top_oil_temp', desc: '상부 유온', unit: '°C', lo: 20, hi: 95 },
+                    { id: 'TT-422', role: 'winding_hotspot', desc: '권선온도(WTI)', unit: '°C', lo: 25, hi: 110 },
+                    { id: 'IT-423', role: 'load_current', desc: '부하 전류', unit: 'A', lo: 300, hi: 1300 },
+                    { id: 'LT-424', role: 'oil_level', desc: '콘서베이터 유위', unit: '%', lo: 25, hi: 85 },
+                    { id: 'TT-425', role: 'ambient_temp', desc: '외기 온도', unit: '°C' },
+                    { id: 'AT-426', role: 'h2_gas', desc: '용존 수소(H2)', unit: 'ppm', lo: 0, hi: 100 },
+                  ],
+                },
+                {
+                  id: 'VFD-401', name: 'VFD-401 인버터 (M-401 구동)',
+                  class: 'VF', criticality: 'B',
+                  design: { ratedCurrent: 110, ratedPower: 75, dcBusNominal: 650 },
+                  tags: [
+                    { id: 'TT-411', role: 'heatsink_temp', desc: '방열판 온도', unit: '°C', lo: 25, hi: 85 },
+                    { id: 'ET-412', role: 'dc_bus_voltage', desc: 'DC 버스 전압', unit: 'V', lo: 580, hi: 720 },
+                    { id: 'IT-413', role: 'output_current', desc: '출력 전류', unit: 'A', lo: 20, hi: 110 },
+                    { id: 'ST-414', role: 'output_freq', desc: '출력 주파수', unit: 'Hz', lo: 30, hi: 60 },
+                    { id: 'JT-415', role: 'drive_power', desc: '출력 전력', unit: 'kW', lo: 10, hi: 75 },
+                  ],
+                },
+                {
+                  id: 'M-401', name: 'M-401 이송펌프 전동기 (인버터 구동)',
+                  class: 'EM', criticality: 'B', driver: 'VF',
+                  design: { ratedCurrent: 105, ratedKw: 75, insulation: 'F', maxWinding: 130 },
+                  tags: [
+                    { id: 'IT-401', role: 'motor_current', desc: '모터 전류', unit: 'A', lo: 20, hi: 110 },
+                    { id: 'TT-403', role: 'winding_temp', desc: '권선 온도', unit: '°C', lo: 40, hi: 130 },
+                    { id: 'TT-404', role: 'bearing_temp_nde', desc: '베어링 온도(NDE)', unit: '°C', lo: 35, hi: 85 },
+                    { id: 'VT-405', role: 'vibration', desc: '진동(overall)', unit: 'mm/s', lo: 0, hi: 7.1 },
+                    { id: 'ST-406', role: 'speed', desc: '회전수', unit: 'rpm', lo: 900, hi: 1800 },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'A-500', name: '열분해/분리 구역 (Furnace & Separation)',
+          units: [
+            {
+              id: 'U-501', name: '분해로 유닛',
+              assets: [
+                {
+                  id: 'F-501', name: 'F-501 나프타 분해로',
+                  class: 'FH', criticality: 'A',
+                  design: { dmtLimit: 590, o2Target: 2.8, draftTarget: -1.2 },
+                  tags: [
+                    { id: 'TT-451', role: 'tmt', desc: '튜브 스킨온도(TMT)', unit: '°C', lo: 480, hi: 590 },
+                    { id: 'TT-452', role: 'cot', desc: '코일 출구온도(COT)', unit: '°C', lo: 370, hi: 400 },
+                    { id: 'FT-453', role: 'fuel_flow', desc: '연료가스 유량', unit: 'Nm³/h', lo: 25, hi: 60 },
+                    { id: 'AT-454', role: 'o2', desc: '배가스 O2', unit: '%', lo: 1.5, hi: 5 },
+                    { id: 'PT-455', role: 'draft', desc: '아치 드래프트', unit: 'mmH2O', lo: -4, hi: 0 },
+                    { id: 'TT-456', role: 'stack_temp', desc: '스택 온도', unit: '°C', lo: 260, hi: 380 },
+                  ],
+                },
+              ],
+            },
+            {
+              id: 'U-502', name: '분리 유닛',
+              assets: [
+                {
+                  id: 'T-401', name: 'T-401 탈프로판탑',
+                  class: 'DC', criticality: 'A',
+                  design: { trays: 42, floodDp: 9.0, designFeed: 95 },
+                  tags: [
+                    { id: 'FT-441', role: 'feed_flow', desc: '피드 유량', unit: 'm³/h', lo: 55, hi: 115 },
+                    { id: 'PDT-442', role: 'dp_top', desc: '상부구간 차압', unit: 'kPa', lo: 2, hi: 9 },
+                    { id: 'PDT-443', role: 'dp_bottom', desc: '하부구간 차압', unit: 'kPa', lo: 2, hi: 10 },
+                    { id: 'TT-444', role: 'tray_temp', desc: '감온 트레이 온도', unit: '°C', lo: 55, hi: 85 },
+                    { id: 'TT-445', role: 'top_temp', desc: '탑정 온도', unit: '°C', lo: 40, hi: 60 },
+                    { id: 'PT-446', role: 'top_pressure', desc: '탑정 압력', unit: 'kg/cm²', lo: 14, hi: 19 },
                   ],
                 },
               ],
@@ -341,11 +775,14 @@
   // ---------- 증상 → 고장모드 매칭 ----------
   // observed: { role: {up,down,spike,variance,high,low} → 강도 0~1 }
   // 반환: 점수순 후보 [{mode, score, matched[], missing[]}]
+  // 증거량 보정: 매칭된 증상 가중치 합이 작을수록(단일 증상 모드) 점수를 축소해
+  // "증상 1개짜리 모드가 항상 100%"가 되는 편향을 막는다.
   function matchFailureModes(assetClass, observed) {
     const modes = failureModesFor(assetClass);
     const results = [];
+    const K = 1.5; // 증거량 축소 상수
     for (const mode of modes) {
-      let got = 0, tot = 0;
+      let got = 0, tot = 0, wMatched = 0;
       const matched = [], missing = [];
       for (const s of mode.symptoms) {
         tot += s.w;
@@ -353,13 +790,23 @@
         const strength = obs ? (obs[s.pattern] || 0) : 0;
         if (strength > 0.15) {
           got += s.w * Math.min(1, strength);
+          wMatched += s.w;
           matched.push({ role: s.role, pattern: s.pattern, strength });
         } else {
           missing.push({ role: s.role, pattern: s.pattern });
         }
       }
-      const score = tot > 0 ? got / tot : 0;
-      if (score > 0) results.push({ mode, score, matched, missing });
+      let raw = tot > 0 ? got / tot : 0;
+      // 부재 증상(absent): 이 패턴이 관측되면 해당 모드가 아니라는 감별 증거 → 감점
+      if (mode.absent) {
+        for (const s of mode.absent) {
+          const obs = observed[s.role];
+          const strength = obs ? (obs[s.pattern] || 0) : 0;
+          if (strength > 0.3) raw = Math.max(0, raw - (s.w / Math.max(tot, 1)) * strength);
+        }
+      }
+      const score = raw * (wMatched / (wMatched + K));
+      if (score > 0) results.push({ mode, score, raw, matched, missing });
     }
     return results.sort((a, b) => b.score - a.score);
   }
@@ -373,7 +820,7 @@
         const raw = localStorage.getItem(LS_KEY);
         if (raw) {
           const m = JSON.parse(raw);
-          if (m && m.version === 2) return m;
+          if (m && m.version === 3) return m;
         }
       }
     } catch (e) { /* 손상 시 기본 모델로 */ }

@@ -5,12 +5,12 @@
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./stats.js'), require('./multivariate.js'), require('../ontology.js'));
+    module.exports = factory(require('./stats.js'), require('./multivariate.js'), require('../ontology.js'), require('./advanced.js'));
   } else {
     root.MEDI = root.MEDI || {};
-    root.MEDI.equip = factory(root.MEDI.stats, root.MEDI.mv, root.MEDI.ontology);
+    root.MEDI.equip = factory(root.MEDI.stats, root.MEDI.mv, root.MEDI.ontology, root.MEDI.adv);
   }
-})(typeof self !== 'undefined' ? self : this, function (stats, mv, ontology) {
+})(typeof self !== 'undefined' ? self : this, function (stats, mv, ontology, adv) {
   'use strict';
 
   const clamp01 = x => Math.max(0, Math.min(1, x));
@@ -81,9 +81,11 @@
     const cu = stats.cusumChart(rec, { mu: bMu, sigma: bSd, k: 0.5, h: 5 });
     const cuViol = cu.violations[cu.violations.length - 1] || 0;
 
+    // 추세항은 적합도(R²)로 감쇠 — 노이즈성 기울기의 오탐 방지
+    const slopeTerm = slopeSig * 8 * Math.min(1, tr.r2 * 2);
     const out = {
-      up: clamp01(Math.max(zShift / 3, slopeSig * 8)),
-      down: clamp01(Math.max(-zShift / 3, -slopeSig * 8)),
+      up: clamp01(Math.max(zShift / 3, slopeTerm)),
+      down: clamp01(Math.max(-zShift / 3, -slopeTerm)),
       variance: clamp01((vr - 1.2) / 1.3),
       spike: clamp01(spikeFrac / 0.05),
       high: 0, low: 0,
@@ -106,9 +108,17 @@
     return out;
   }
 
+  // 베이스라인 구간에서 y~x 선형회귀 적합 후 전체 잔차 시리즈 (부하 보정 잔차 지표용)
+  function residualVs(y, x, baseIdx) {
+    const b0 = baseIdx ? baseIdx[0] : 0;
+    const b1 = baseIdx ? baseIdx[1] : Math.floor(y.length * 0.4);
+    const fit = stats.linreg(x.slice(b0, b1), y.slice(b0, b1));
+    return y.map((v, i) => v - (fit.slope * x[i] + fit.intercept));
+  }
+
   // ---------- 파생 지표 ----------
   // 설비 클래스별 물리 기반 파생 시리즈 (열교환기 U값, 펌프 효율, 서지마진 등)
-  function derivedSeries(asset, aligned, roleCol) {
+  function derivedSeries(asset, aligned, roleCol, baseIdx) {
     const out = {}; // role → {v: [], desc, unit, aboveIsBad}
     const col = r => (roleCol[r] !== undefined ? aligned.cols[roleCol[r]] : null);
     const n = aligned.t.length;
@@ -159,6 +169,108 @@
         out.temp_ratio = { v: tr, desc: '압축비 보정 토출온도 (효율 저하 지표)', unit: '-', aboveIsBad: true };
       }
     }
+
+    if (asset.class === 'RC') {
+      // 단열(등엔트로피) 토출온도 잔차: Td − Ts,abs·r^((k−1)/k) — 밸브 누설 지표
+      const ps = col('suction_pressure'), pd = col('discharge_pressure');
+      const ts = col('suction_temp'), td = col('discharge_temp');
+      if (ps && pd && ts && td) {
+        const k = (asset.design && asset.design.k) || 1.25;
+        const ex = (k - 1) / k;
+        const resid = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const r = (pd[i] + 1.033) / Math.max(ps[i] + 1.033, 0.2);
+          const tdModel = (ts[i] + 273.15) * Math.pow(Math.max(r, 1), ex) - 273.15;
+          resid[i] = td[i] - tdModel;
+        }
+        out.adiabatic_resid = { v: resid, desc: '단열 토출온도 잔차 (밸브 누설 지표)', unit: '°C', aboveIsBad: true };
+      }
+    }
+
+    if (asset.class === 'VF') {
+      const hs = col('heatsink_temp'), oi = col('output_current'), of = col('output_freq');
+      if (hs && oi) {
+        const x = oi.map(v => v * v); // 손실 ≈ 전도(∝I²) 지배 간이 모델
+        out.hs_residual = { v: residualVs(hs, x, baseIdx), desc: '부하 보정 방열판 온도 잔차 (냉각 열화)', unit: '°C', aboveIsBad: true };
+      }
+      if (oi && of) {
+        const x = of.map(v => v * v); // 원심 부하: 토크 ∝ f²
+        out.if_residual = { v: residualVs(oi, x, baseIdx), desc: '주파수-전류 잔차 (기계측 부하 증가)', unit: 'A', aboveIsBad: true };
+      }
+    }
+
+    if (asset.class === 'EM') {
+      const wt = col('winding_temp'), mi = col('motor_current');
+      if (wt && mi) {
+        const x = mi.map(v => v * v); // 동손 ∝ I² — 부하로 설명되는 온도를 제거
+        out.wt_residual = { v: residualVs(wt, x, baseIdx), desc: '부하 보정 권선온도 잔차 (냉각/절연 열화)', unit: '°C', aboveIsBad: true };
+      }
+    }
+
+    if (asset.class === 'TR') {
+      const to = col('top_oil_temp'), ambT = col('ambient_temp'), li = col('load_current'), lv = col('oil_level');
+      if (to && ambT && li) {
+        const rise = to.map((v, i) => v - ambT[i]);
+        const x = li.map(v => v * v); // IEEE C57.91: 유온 상승 ≈ K² 지배
+        out.cool_residual = { v: residualVs(rise, x, baseIdx), desc: '부하 보정 유온상승 잔차 (냉각 성능)', unit: '°C', aboveIsBad: true };
+      }
+      if (lv && to) {
+        out.oil_level_c = { v: residualVs(lv, to, baseIdx), desc: '유온 보정 유위 (누유 지표)', unit: '%', aboveIsBad: false };
+      }
+    }
+
+    if (asset.class === 'CV') {
+      const op = col('controller_output'), zt = col('valve_position'), pv = col('flow_pv');
+      if (pv) {
+        // 루프 진동 지표: PV 증분의 이동 표준편차 (리미트사이클의 슬립 점프 검출)
+        const diffs = pv.map((v, i) => (i ? v - pv[i - 1] : 0));
+        out.loop_osc = { v: stats.rollingMeanStd(diffs, 24).std, desc: '루프 진동 지표 (PV 증분 이동σ)', unit: '', aboveIsBad: true };
+      }
+      if (op && zt) {
+        const gap = op.map((v, i) => Math.abs(v - zt[i]));
+        out.pos_gap = { v: gap, desc: 'OP-실개도 편차 (액추에이터 이상)', unit: '%', aboveIsBad: true };
+      }
+      if (pv && zt) {
+        out.flow_op_resid = { v: residualVs(pv, zt, baseIdx), desc: '개도-유량 잔차 (트림 마모↑/막힘↓)', unit: '', aboveIsBad: null };
+      }
+    }
+
+    if (asset.class === 'DC') {
+      const dpT = col('dp_top'), feed = col('feed_flow'), tray = col('tray_temp'), top = col('top_temp');
+      if (dpT && feed) {
+        const fRef = (asset.design && asset.design.designFeed) || stats.mean(feed.slice(0, Math.floor(n * 0.4)));
+        const v = dpT.map((d, i) => d / Math.max(Math.pow(feed[i] / fRef, 2), 0.15));
+        out.dp_norm = { v, desc: '부하 정규화 차압 (내부 오염 지표)', unit: 'kPa', aboveIsBad: true };
+      }
+      if (tray && top) {
+        out.profile_dt = { v: tray.map((v, i) => v - top[i]), desc: '온도 프로파일 구배 (붕괴=플러딩)', unit: '°C', aboveIsBad: false };
+      }
+    }
+
+    if (asset.class === 'FH') {
+      const tmt = col('tmt'), cot = col('cot');
+      if (tmt && cot) {
+        out.tmt_cot_gap = { v: tmt.map((v, i) => v - cot[i]), desc: 'TMT-COT 간극 (코킹 지표)', unit: '°C', aboveIsBad: true };
+      }
+    }
+
+    if (asset.class === 'CT') {
+      const hot = col('hot_water'), cold = col('cold_water'), ambT = col('ambient_temp');
+      if (cold && ambT) {
+        // 습구온도 프록시: 외기 − 3.5°C (RH 태그 있으면 정식 습구 계산으로 대체)
+        out.approach = { v: cold.map((v, i) => v - (ambT[i] - 3.5)), desc: '접근온도차 (냉수−습구 프록시)', unit: '°C', aboveIsBad: true };
+      }
+      if (hot && cold) {
+        out.range = { v: hot.map((v, i) => v - cold[i]), desc: '레인지 (온수−냉수)', unit: '°C', aboveIsBad: false };
+      }
+      if (out.approach && out.range) {
+        // CTI 유효도 ε = R/(R+A) — 접근온도차 상승 시 하락
+        out.effectiveness = {
+          v: out.range.v.map((r, i) => r / Math.max(r + out.approach.v[i], 0.5)),
+          desc: '냉각탑 유효도 R/(R+A)', unit: '', aboveIsBad: false,
+        };
+      }
+    }
     return out;
   }
 
@@ -203,7 +315,7 @@
     }
 
     // 2) 파생지표 패턴 검출
-    const derived = derivedSeries(asset, aligned, roleCol);
+    const derived = derivedSeries(asset, aligned, roleCol, baseIdx);
     const derivedDiag = {};
     for (const role of Object.keys(derived)) {
       const d = detectPatterns(aligned.t, derived[role].v, baseIdx, recentIdx, null);
@@ -246,13 +358,127 @@
       } catch (e) { mvResult = null; }
     }
 
+    // 5) 최신 검증 기법 (advanced.js) — 검출기별 결과 + 온셋/RUL
+    let advResult = null;
+    if (adv && baseEnd >= 60) {
+      try {
+        advResult = advancedAnalysis(asset, aligned, tagDiag, baseIdx, recentIdx);
+      } catch (e) { advResult = null; }
+    }
+
     return {
       assetId: asset.id, ok: true,
       aligned: { t: aligned.t, n, baseIdx, recentIdx },
       tagDiag, derived, derivedDiag, observed,
-      candidates, mv: mvResult,
+      candidates, mv: mvResult, adv: advResult,
     };
   }
 
-  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset };
+  // ---------- 최신 기법 종합 (Isolation Forest·ECOD·PELT·Matrix Profile·RUL) ----------
+  function advancedAnalysis(asset, aligned, tagDiag, baseIdx, recentIdx) {
+    const n = aligned.t.length;
+    const ids = aligned.ids;
+    const X = aligned.t.map((_, i) => ids.map(id => aligned.cols[id][i]));
+    const recLen = Math.max(1, recentIdx[1] - recentIdx[0]);
+
+    // Isolation Forest — 정상 베이스라인으로 숲 구성, 전체 채점, 99분위 경험 임계
+    const iso = adv.isolationForest(X, { seed: 7, trainRange: baseIdx });
+    const isoBase = iso.scores.slice(baseIdx[0], baseIdx[1]);
+    const isoThr = Math.max(stats.quantile(isoBase, 0.99), 0.55);
+    const isoRecent = iso.scores.slice(recentIdx[0], recentIdx[1]);
+    const isoFrac = isoRecent.filter(s => s > isoThr).length / recLen;
+
+    // ECOD — 동일 방식의 경험적 보정
+    const ec = adv.ecod(X);
+    const ecBase = ec.scores.slice(baseIdx[0], baseIdx[1]);
+    const ecThr = stats.quantile(ecBase, 0.99);
+    const ecRecent = ec.scores.slice(recentIdx[0], recentIdx[1]);
+    const ecFrac = ecRecent.filter(s => s > ecThr).length / recLen;
+
+    // PELT 열화 온셋 — Mahalanobis 거리(≈건강 추이)를 평활·데시메이션 후 분할
+    let onset = null;
+    try {
+      const mah = mv.mahalanobisFit(X.slice(baseIdx[0], baseIdx[1]));
+      const dist = mv.mahalanobisApply(mah, X);
+      const step = Math.max(1, Math.floor(n / 600));
+      const ds = [], dt = [];
+      for (let i = 0; i < n; i += step) {
+        // step 구간 평균으로 평활 (자기상관 완화)
+        let s = 0, c = 0;
+        for (let j = i; j < Math.min(i + step, n); j++) { s += dist[j]; c++; }
+        ds.push(s / c); dt.push(aligned.t[i]);
+      }
+      const cp = adv.pelt(ds, { minSeg: Math.max(20, Math.floor(ds.length * 0.05)) });
+      // 마지막 변화점 중 "이후 평균이 이전보다 유의하게 높은" 것을 온셋으로
+      for (let k = cp.changepoints.length - 1; k >= 0; k--) {
+        const c = cp.changepoints[k];
+        const pre = ds.slice(Math.max(0, c - 60), c);
+        const post = ds.slice(c, Math.min(ds.length, c + 60));
+        if (pre.length > 5 && post.length > 5) {
+          const preMu = stats.mean(pre), postMu = stats.mean(post);
+          const preSd = Math.max(stats.std(pre), 1e-9);
+          if ((postMu - preMu) / preSd > 2) { onset = { t: dt[c], sigma: (postMu - preMu) / preSd }; break; }
+        }
+      }
+    } catch (e) { onset = null; }
+
+    // Matrix Profile 디스코드 — 이상 강도 최대 태그 1개에 대해 (형태 이상)
+    let discord = null;
+    try {
+      const worst = Object.entries(tagDiag)
+        .sort((a, b) => Math.max(b[1].up, b[1].down, b[1].variance, b[1].spike) - Math.max(a[1].up, a[1].down, a[1].variance, a[1].spike))[0];
+      if (worst) {
+        const col = aligned.cols[worst[0]];
+        const step = Math.max(1, Math.floor(n / 1500));
+        const ts = [], tt = [];
+        for (let i = 0; i < n; i += step) { ts.push(col[i]); tt.push(aligned.t[i]); }
+        const spanMs = tt[tt.length - 1] - tt[0];
+        const m = Math.max(8, Math.min(120, Math.round(ts.length * (2 * 3600000) / Math.max(spanMs, 1)))); // ≈2시간 창
+        const mp = adv.matrixProfile(ts, m, { topK: 2 });
+        if (mp && mp.discords.length) {
+          discord = {
+            tagId: worst[0], m,
+            windows: mp.discords.map(d => ({ t: tt[d.idx], dist: +d.dist.toFixed(2) })),
+            mp: mp.mp, mpT: tt.slice(0, mp.mp.length),
+          };
+        }
+      }
+    } catch (e) { discord = null; }
+
+    // RUL — 상한이 있는 태그 중 상승 추세 최대 태그에 지수 열화 적합
+    let rul = null;
+    try {
+      let bestTag = null, bestShift = 1.2;
+      for (const t of asset.tags || []) {
+        const d = tagDiag[t.id];
+        if (!d || t.hi === undefined || t.hi === null) continue;
+        if (d.zShift > bestShift && d.slopePerHour > 0) { bestShift = d.zShift; bestTag = t; }
+      }
+      if (bestTag && onset) {
+        // 온셋 이후 구간만 적합 (연구 권고: 온셋 전 데이터 혼입 금지)
+        const col = aligned.cols[bestTag.id];
+        const from = aligned.t.findIndex(tv => tv >= onset.t);
+        if (from >= 0 && n - from >= 25) {
+          const fit = adv.expDegradationFit(aligned.t.slice(from), col.slice(from));
+          if (fit && fit.beta > 0 && fit.r2 > 0.2) {
+            const hitMs = fit.timeToThreshold(bestTag.hi);
+            rul = {
+              tagId: bestTag.id, threshold: bestTag.hi, r2: +fit.r2.toFixed(2),
+              beta: fit.beta, reachAt: hitMs,
+              hoursLeft: hitMs ? (hitMs - aligned.t[n - 1]) / 3600000 : null,
+            };
+          }
+        }
+      }
+    } catch (e) { rul = null; }
+
+    return {
+      ids, t: aligned.t,
+      iforest: { scores: iso.scores, threshold: isoThr, recentFrac: isoFrac },
+      ecod: { scores: ec.scores, threshold: ecThr, recentFrac: ecFrac },
+      onset, discord, rul,
+    };
+  }
+
+  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis };
 });

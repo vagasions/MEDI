@@ -83,6 +83,26 @@
     }
     lines.push('');
 
+    // 3b) 최신 검증 기법
+    if (analysis.adv) {
+      const a = analysis.adv;
+      lines.push('## 3b. 최신 검증 기법 (논문 기반)');
+      lines.push(`- Isolation Forest(ICDM 2008) 최근 초과율: ${(a.iforest.recentFrac * 100).toFixed(0)}% · ECOD(TKDE 2022): ${(a.ecod.recentFrac * 100).toFixed(0)}% ${Math.min(a.iforest.recentFrac, a.ecod.recentFrac) > 0.15 ? '— **두 검출기 합의: 비선형 복합 이상 진행 중**' : '— 합의 수준 낮음(정상 범주)'}`);
+      if (a.onset) {
+        lines.push(`- 열화 시작점(PELT 변화점, JASA 2012): **${new Date(a.onset.t).toLocaleString('ko-KR')}** (이후 이상거리 평균 +${a.onset.sigma.toFixed(1)}σ)`);
+      } else {
+        lines.push('- 열화 시작점(PELT): 유의한 변화점 없음');
+      }
+      if (a.discord && a.discord.windows.length) {
+        lines.push(`- 형태 이상(Matrix Profile 디스코드, ICDM 2016): ${a.discord.tagId}에서 ${a.discord.windows.map(w => new Date(w.t).toLocaleString('ko-KR')).join(', ')} 구간이 과거에 없던 파형`);
+      }
+      if (a.rul && a.rul.hoursLeft !== null) {
+        const h = a.rul.hoursLeft;
+        lines.push(`- **잔여수명 근사(지수 열화 모델, IIE Trans. 2005)**: ${a.rul.tagId}가 현재 가속 추세 유지 시 상한(${a.rul.threshold}) 도달까지 약 **${h < 48 ? h.toFixed(0) + '시간' : (h / 24).toFixed(1) + '일'}** (적합도 R²=${a.rul.r2}) — 추세 기반 근사치이므로 정비 계획 참고용`);
+      }
+      lines.push('');
+    }
+
     // 4) 태그별 상세
     lines.push('## 4. 태그별 상세');
     lines.push('| 태그 | 설명 | 현재값 | 베이스라인 대비 | 변동성 | 추세(σ/h) | 판정 |');

@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns } = window.MEDI;
+  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv } = window.MEDI;
 
   // ---------- 상태 ----------
   const LS_SETTINGS = 'medi.settings.v1';
@@ -31,7 +31,6 @@
       gatewayUrl: 'http://localhost:8137',
       recentHours: 24,
       scenarios: simulator.DEFAULT_ACTIVE.map(a => a.id),
-      llmModel: llm.DEFAULT_MODEL,
       autoRefresh: true,
     };
     try {
@@ -162,13 +161,16 @@
 
   // ---------- 네비게이션 ----------
   const NAV = [
+    { group: '감시' },
     { id: 'dashboard', ico: '📊', name: '대시보드' },
     { id: 'asset', ico: '⚙️', name: '설비 상세' },
+    { id: 'alarms', ico: '🔔', name: '알람 / 이벤트' },
+    { group: '분석' },
     { id: 'trends', ico: '📈', name: '트렌드 분석' },
     { id: 'patterns', ico: '🎓', name: '분석 실습 (5패턴)' },
-    { id: 'alarms', ico: '🔔', name: '알람 / 이벤트' },
-    { id: 'ontology', ico: '🕸️', name: '자산 온톨로지' },
     { id: 'report', ico: '📋', name: '진단 리포트' },
+    { group: '지식 / 시스템' },
+    { id: 'ontology', ico: '🕸️', name: '자산 온톨로지' },
     { id: 'settings', ico: '🔧', name: '설정 / 연동' },
   ];
 
@@ -187,11 +189,12 @@
       <div class="sidebar">
         <div class="logo">MEDI <span>PdM</span></div>
         <div class="tagline">설비 예지보전 · dataPARC 연동</div>
-        ${NAV.map(n => `
-          <button class="nav-item ${S.view === n.id ? 'active' : ''}" data-nav="${n.id}">
-            <span class="ico">${n.ico}</span>${n.name}
-            ${n.id === 'alarms' && activeAlarms ? `<span class="nav-badge">${activeAlarms}</span>` : ''}
-          </button>`).join('')}
+        ${NAV.map(n => n.group
+          ? `<div class="nav-group">${n.group}</div>`
+          : `<button class="nav-item ${S.view === n.id ? 'active' : ''}" data-nav="${n.id}">
+              <span class="ico">${n.ico}</span>${n.name}
+              ${n.id === 'alarms' && activeAlarms ? `<span class="nav-badge">${activeAlarms}</span>` : ''}
+            </button>`).join('')}
         <div class="foot">
           ${esc((S.source && S.source.info().desc) || '데이터소스 초기화 중')}<br>
           룰베이스 엔진 v1 · AI 분석은 선택 기능
@@ -202,8 +205,9 @@
     app.querySelectorAll('[data-nav]').forEach(b => b.addEventListener('click', () => go(b.dataset.nav)));
 
     const main = $('#main');
+    main.classList.add('view-enter');
     if (S.loading && !S.results.length) {
-      main.innerHTML = `<div class="loading">데이터 로딩/분석 중…</div>`;
+      main.innerHTML = `<div class="loading"><span class="spin"></span><br>데이터 로딩 / 분석 중…</div>`;
       return;
     }
     switch (S.view) {
@@ -305,7 +309,7 @@
     }
 
     renderAlarmList($('#dash-alarms'), active.slice(0, 8), false);
-    if (!active.length) $('#dash-alarms').innerHTML = '<div class="faint">현재 활성 알람이 없습니다. 이상 징후 발생 시 여기와 좌측 배지에 표시됩니다.</div>';
+    if (!active.length) $('#dash-alarms').innerHTML = '<div class="empty"><span class="empty-ico">✅</span>현재 활성 알람이 없습니다.<br>이상 징후가 감지되면 여기와 좌측 배지에 표시됩니다.</div>';
   }
 
   // ---------- 뷰: 설비 상세 ----------
@@ -356,6 +360,16 @@
       </div>
 
       <div class="panel">
+        <h2>최신 검증 기법 — 논문 기반 고급 진단</h2>
+        <div class="pattern-note">
+          Isolation Forest(ICDM 2008)·ECOD(TKDE 2022)가 <strong>비선형 복합 이상</strong>을, PELT 변화점(JASA 2012)이 <strong>열화 시작 시점</strong>을,
+          Matrix Profile(ICDM 2016)이 <strong>과거에 없던 파형</strong>을 찾습니다. 두 검출기 합의 시에만 건강지수에 반영해 오탐을 억제합니다.
+        </div>
+        <div id="adv-facts" style="margin-bottom:10px"></div>
+        <div class="grid cols-2" id="adv-charts"></div>
+      </div>
+
+      <div class="panel">
         <h2>고장모드 후보 (ISO 14224 라이브러리 매칭)</h2>
         <div id="fm-cards"></div>
       </div>
@@ -401,6 +415,49 @@
       $('#mv-contrib').innerHTML = `<span class="muted">현재 이상 기여 상위 태그:</span> ${an.mv.topContributors.map(c => `<span class="tag-chip on" style="cursor:default">${esc(c.name)} ${(c.share * 100).toFixed(0)}%</span>`).join(' ')}`;
     } else {
       $('#ch-t2').parentElement.parentElement.innerHTML = '<div class="faint">다변량 모델 구성 불가 (데이터/태그 부족)</div>';
+    }
+
+    // 최신 기법 패널
+    if (an.adv) {
+      const adv = an.adv;
+      const facts = [];
+      const consensus = Math.min(adv.iforest.recentFrac, adv.ecod.recentFrac);
+      facts.push(`<span class="tag-chip ${consensus > 0.15 ? 'on' : ''}" style="cursor:default">iForest 최근 초과 ${(adv.iforest.recentFrac * 100).toFixed(0)}%</span>`);
+      facts.push(`<span class="tag-chip ${consensus > 0.15 ? 'on' : ''}" style="cursor:default">ECOD 최근 초과 ${(adv.ecod.recentFrac * 100).toFixed(0)}%</span>`);
+      const corroborated = consensus > 0.15 || (an.candidates && an.candidates[0] && an.candidates[0].score > 0.3);
+      if (adv.onset && corroborated) facts.push(`<span class="tag-chip on" style="cursor:default">열화 시작(PELT): ${fmtTimeShort(adv.onset.t)}</span>`);
+      if (adv.rul && adv.rul.hoursLeft !== null) {
+        const h = adv.rul.hoursLeft;
+        facts.push(`<span class="tag-chip on" style="cursor:default;color:var(--warn);border-color:var(--warn)">RUL 근사: ${adv.rul.tagId} 상한 도달 ~${h < 48 ? h.toFixed(0) + '시간' : (h / 24).toFixed(1) + '일'} 후 (R²=${adv.rul.r2})</span>`);
+      }
+      $('#adv-facts').innerHTML = facts.join(' ');
+
+      const advCharts = $('#adv-charts');
+      // iForest 점수
+      const box1 = document.createElement('div');
+      box1.className = 'chart-box';
+      box1.innerHTML = '<h3>Isolation Forest 이상점수 (0.5≈정상)</h3><canvas></canvas>';
+      advCharts.appendChild(box1);
+      charts.lineChart(box1.querySelector('canvas'), {
+        height: 180,
+        series: [{ name: 'iForest', t: adv.t, v: adv.iforest.scores, color: '#f06292' }],
+        thresholds: [{ y: adv.iforest.threshold, label: '경험적 한계', color: '#ef5350' }],
+        vlines: adv.onset && corroborated ? [{ t: adv.onset.t, label: '열화 시작', color: 'rgba(255,213,79,0.8)' }] : [],
+      });
+      // Matrix Profile
+      if (adv.discord) {
+        const box2 = document.createElement('div');
+        box2.className = 'chart-box';
+        box2.innerHTML = `<h3>Matrix Profile — ${esc(adv.discord.tagId)} 형태 이상 거리</h3><canvas></canvas>`;
+        advCharts.appendChild(box2);
+        charts.lineChart(box2.querySelector('canvas'), {
+          height: 180,
+          series: [{ name: 'MP', t: adv.discord.mpT, v: adv.discord.mp, color: '#4db6ac' }],
+          vlines: adv.discord.windows.map((w, i) => ({ t: w.t, label: i === 0 ? '디스코드' : '', color: 'rgba(239,83,80,0.7)' })),
+        });
+      }
+    } else {
+      $('#adv-facts').innerHTML = '<span class="faint">데이터가 부족해 고급 진단을 생략했습니다.</span>';
     }
 
     // 고장모드 카드
@@ -688,20 +745,28 @@
 
   function ptAnomaly(body, tags) {
     const assets = ontology.listAssets(S.model).filter(a => (a.tags || []).some(t => S.seriesMap[t.id]));
-    if (!S.ptAno) S.ptAno = { asset: assets[0] ? assets[0].id : null };
+    if (!S.ptAno) S.ptAno = { asset: assets[0] ? assets[0].id : null, algo: 'mahalanobis' };
+    const ALGOS = {
+      mahalanobis: { name: 'Mahalanobis 거리 (고전·통계)', note: '정상 학습구간의 평균·공분산에서 얼마나 떨어졌는지를 한 점수로. 선형 상관 구조 기반 — 본 시스템 건강지수의 근간.' },
+      iforest: { name: 'Isolation Forest (ICDM 2008)', note: '무작위 분할 트리에서 빨리 고립되는 점일수록 이상. 비선형·다봉(운전모드 여러 개) 데이터에 강함 — 5,500회 이상 인용된 검증 기법.' },
+      ecod: { name: 'ECOD (IEEE TKDE 2022)', note: '차원별 경험적 누적분포의 꼬리확률 합. 파라미터가 전혀 없어 튜닝 불필요 — 최신 검증 기법.' },
+    };
     body.innerHTML = `
       <div class="panel">
-        <h2>이상탐지 — Mahalanobis 거리 기반 복합 이상 점수</h2>
-        <div class="pattern-note">설비의 모든 신호를 하나의 벡터로 보고, 정상 학습구간의 평균·공분산에서 <strong>얼마나 떨어졌는지(거리)</strong>를 한 점수로 계산합니다. 개별 임계값으로는 안 보이는 "조합의 이상"을 잡는 예지보전의 핵심 패턴 — 본 시스템 건강지수의 근간입니다.</div>
+        <h2>이상탐지 — 복합 신호에서 "조합의 이상"을 찾기</h2>
+        <div class="pattern-note" id="an-note">${ALGOS[S.ptAno.algo].note}</div>
         <div class="form-row">
           <label>설비</label>
           <select id="an-asset">${assets.map(a => `<option value="${a.id}" ${a.id === S.ptAno.asset ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+          <label>알고리즘</label>
+          <select id="an-algo">${Object.entries(ALGOS).map(([k, v]) => `<option value="${k}" ${k === S.ptAno.algo ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
         </div>
         <div class="chart-box"><canvas id="an-chart"></canvas></div>
         <div id="an-top" style="margin-top:10px"></div>
       </div>
     `;
     $('#an-asset').addEventListener('change', e => { S.ptAno.asset = e.target.value; render(); });
+    $('#an-algo').addEventListener('change', e => { S.ptAno.algo = e.target.value; render(); });
 
     const asset = ontology.findAsset(S.model, S.ptAno.asset);
     if (!asset) return;
@@ -709,21 +774,49 @@
     const al = equip.alignSeries(S.seriesMap, ids);
     if (al.t.length < 50) { $('#an-top').innerHTML = '<div class="faint">데이터 부족</div>'; return; }
     const X = al.t.map((_, i) => al.ids.map(id => al.cols[id][i]));
-    const res = patterns.anomaly(al.t, X, al.ids);
+    const split = Math.max(20, Math.floor(X.length * 0.5));
+    const { mu, sd } = mv.meanStdCols(X.slice(0, split));
+
+    let scores, warnLim, alarmLim, label;
+    if (S.ptAno.algo === 'iforest') {
+      scores = adv.isolationForest(X, { seed: 7 }).scores;
+      const base = scores.slice(0, split);
+      warnLim = stats.quantile(base, 0.99);
+      alarmLim = Math.max(stats.quantile(base, 0.999), 0.6);
+      label = 'iForest 점수';
+    } else if (S.ptAno.algo === 'ecod') {
+      scores = adv.ecod(X).scores;
+      const base = scores.slice(0, split);
+      warnLim = stats.quantile(base, 0.99);
+      alarmLim = stats.quantile(base, 0.999) * 1.05;
+      label = 'ECOD 점수';
+    } else {
+      const res = patterns.anomaly(al.t, X, al.ids);
+      scores = res.scores; warnLim = res.dWarn; alarmLim = res.dAlarm;
+      label = 'Mahalanobis 거리';
+    }
+
     charts.lineChart($('#an-chart'), {
       height: 260,
-      series: [{ name: '이상 점수 (거리)', t: al.t, v: res.scores, color: '#f06292' }],
+      series: [{ name: label, t: al.t, v: scores, color: '#f06292' }],
       thresholds: [
-        { y: res.dWarn, label: '주의', color: '#ffca28' },
-        { y: res.dAlarm, label: '경보', color: '#ef5350' },
+        { y: warnLim, label: '주의', color: '#ffca28' },
+        { y: alarmLim, label: '경보', color: '#ef5350' },
       ],
-      vlines: [{ t: al.t[res.split], label: '학습|감시', color: 'rgba(255,213,79,0.6)' }],
+      vlines: [{ t: al.t[split], label: '학습|감시', color: 'rgba(255,213,79,0.6)' }],
     });
-    const lastAnom = res.anomalyIdx.slice(-5).reverse();
+
+    // 이상 시점 + 기여 태그 (z-점수 기준 공통 산출)
+    const anomIdx = [];
+    for (let i = split; i < scores.length; i++) if (scores[i] > alarmLim) anomIdx.push(i);
+    const topVars = i => X[i]
+      .map((v, j) => ({ name: al.ids[j], z: sd[j] > 0 ? (v - mu[j]) / sd[j] : 0 }))
+      .sort((a, b) => Math.abs(b.z) - Math.abs(a.z)).slice(0, 3);
+    const lastAnom = anomIdx.slice(-5).reverse();
     $('#an-top').innerHTML = lastAnom.length
       ? `<h3>최근 이상 시점과 기여 태그</h3>` + lastAnom.map(i =>
-        `<div class="alarm-row"><span class="a-time">${fmtTimeShort(al.t[i])}</span><div class="a-msg">점수 ${res.scores[i].toFixed(1)} — ${res.topVars(i).map(v => `<code>${esc(v.name)} (${v.z >= 0 ? '+' : ''}${v.z.toFixed(1)}σ)</code>`).join(' ')}</div></div>`).join('')
-      : `<div class="faint">감시구간에서 경보 수준(${res.dAlarm.toFixed(1)})을 넘은 시점이 없습니다. 감시구간 주의 초과율 ${(res.recentWarnFrac * 100).toFixed(0)}%</div>`;
+        `<div class="alarm-row"><span class="a-time">${fmtTimeShort(al.t[i])}</span><div class="a-msg">점수 ${scores[i].toFixed(2)} — ${topVars(i).map(v => `<code>${esc(v.name)} (${v.z >= 0 ? '+' : ''}${v.z.toFixed(1)}σ)</code>`).join(' ')}</div></div>`).join('')
+      : `<div class="faint">감시구간에서 경보 수준(${alarmLim.toFixed(2)})을 넘은 시점이 없습니다.</div>`;
   }
 
   function ptTimeseries(body, tags) {
@@ -829,9 +922,9 @@
     `;
     wireTopbar();
     renderAlarmList($('#al-active'), active, true);
-    if (!active.length) $('#al-active').innerHTML = '<div class="faint">활성 알람이 없습니다.</div>';
+    if (!active.length) $('#al-active').innerHTML = '<div class="empty"><span class="empty-ico">✅</span>활성 알람이 없습니다.</div>';
     renderAlarmList($('#al-hist'), all.slice(0, 50), false);
-    if (!all.length) $('#al-hist').innerHTML = '<div class="faint">이벤트 이력이 없습니다. 데이터가 갱신되며 이상이 감지되면 기록됩니다.</div>';
+    if (!all.length) $('#al-hist').innerHTML = '<div class="empty"><span class="empty-ico">🗂️</span>이벤트 이력이 없습니다.<br>데이터가 갱신되며 이상이 감지되면 기록됩니다.</div>';
   }
 
   // ---------- 뷰: 온톨로지 ----------
@@ -974,7 +1067,8 @@
   function viewReport(main) {
     const assets = ontology.listAssets(S.model);
     if (!S.selectedAsset && assets.length) S.selectedAsset = assets[0].id;
-    const keyed = llm.hasKey();
+    const llmConf = llm.loadConf();
+    const keyed = llm.ready(llmConf);
 
     main.innerHTML = `
       ${topbar('진단 리포트')}
@@ -1020,18 +1114,19 @@
       });
       renderReport();
     } else {
+      const provName = (llm.PROVIDERS[llmConf.provider] || {}).name || llmConf.provider;
       body.innerHTML = `
         ${keyed ? '' : `<div class="notice warn">
           <strong>AI 분석은 추후 사용을 위한 선택 기능입니다.</strong> 지금은 API 키 없이도 룰베이스 리포트가 모든 진단을 수행합니다.<br>
-          나중에 Anthropic API 키를 <a href="#" id="go-settings" style="color:var(--accent)">설정</a>에서 입력하면,
-          온톨로지+분석결과를 컨텍스트로 Claude가 심층 분석(자연어 질의, 감별진단, 정비계획 제안)을 해 줍니다.
+          <a href="#" id="go-settings" style="color:var(--accent)">설정</a>에서 프로바이더(Anthropic·OpenAI·Gemini·사내 호환)와 키를 등록하면,
+          온톨로지+분석결과를 컨텍스트로 LLM 심층 분석(자연어 질의, 감별진단, 정비계획 제안)이 활성화됩니다.
         </div>`}
         <div class="panel">
           <div class="form-row">
             <label>설비</label>
             <select id="ai-asset">${assets.map(a => `<option value="${a.id}" ${a.id === S.selectedAsset ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
-            <label>모델</label>
-            <select id="ai-model">${llm.MODELS.map(m => `<option value="${m.id}" ${m.id === S.settings.llmModel ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
+            <span class="src-chip">🤖 ${esc(provName)} · ${esc(llmConf.model || '모델 미지정')}</span>
+            <button class="btn small" id="ai-goset">변경</button>
           </div>
           <div class="form-row">
             <input type="text" id="ai-q" placeholder="질문 예: 이 설비 증상의 가장 유력한 원인과 이번 주 안에 해야 할 조치는?" style="flex:1" ${keyed ? '' : 'disabled'}>
@@ -1042,12 +1137,12 @@
       `;
       const goSet = $('#go-settings');
       if (goSet) goSet.addEventListener('click', e => { e.preventDefault(); go('settings'); });
+      const goSet2 = $('#ai-goset');
+      if (goSet2) goSet2.addEventListener('click', () => go('settings'));
       const runBtn = $('#ai-run');
       if (runBtn) runBtn.addEventListener('click', async () => {
         const aid = $('#ai-asset').value;
         const q = $('#ai-q').value.trim() || '현재 상태를 진단하고 우선순위별 조치를 제안해줘.';
-        const modelId = $('#ai-model').value;
-        S.settings.llmModel = modelId; saveSettings();
         const r = resultFor(aid);
         const extra = r && r.analysis && r.analysis.ok ? {
           observedSymptoms: r.analysis.observed,
@@ -1062,7 +1157,7 @@
         render();
         try {
           await llm.analyze({
-            model: modelId, context: ctx, question: q,
+            context: ctx, question: q,
             onDelta: (d, full) => {
               S.llmOut = full;
               const out = $('#ai-out');
@@ -1134,20 +1229,14 @@
         </div>
       </div>
 
-      <div class="panel">
-        <h2>AI 분석 (선택 — 추후 사용)</h2>
+      <div class="panel" id="llm-panel">
+        <h2>AI 분석 (선택 — 추후 사용, 멀티 프로바이더)</h2>
         <div class="faint" style="margin-bottom:8px">
-          지금은 키가 없어도 모든 기능이 룰베이스로 동작합니다. 추후 Anthropic API 키를 입력하면 "진단 리포트 → AI 분석" 탭이 활성화됩니다.
-          키는 기본적으로 <strong>메모리에만</strong> 보관되며(새로고침 시 삭제), "이 브라우저에 저장"을 체크한 경우에만 localStorage에 저장됩니다.
+          키가 없어도 모든 기능은 룰베이스로 동작합니다. 아래에서 프로바이더를 선택해 키를 등록하면 "진단 리포트 → AI 분석" 탭이 활성화됩니다.
+          키는 기본적으로 <strong>메모리에만</strong> 보관(새로고침 시 삭제), "이 브라우저에 저장" 체크 시에만 localStorage에 저장됩니다.
+          사내망 LLM(Ollama/vLLM/LiteLLM/Azure 등)은 "OpenAI 호환"을 선택해 주소만 지정하면 됩니다.
         </div>
-        <div class="form-row">
-          <label>API 키</label>
-          <input type="password" id="set-key" placeholder="sk-ant-…" style="flex:1" value="">
-          <label class="chk"><input type="checkbox" id="set-keyremember"> 이 브라우저에 저장</label>
-          <button class="btn small" id="set-keysave">저장</button>
-          <button class="btn small" id="set-keyclear">삭제</button>
-        </div>
-        <div class="faint" id="set-keystate">${llm.hasKey() ? '✅ 키 설정됨' : '키 미설정 (룰베이스 모드)'}</div>
+        <div id="llm-form"></div>
       </div>
 
       <div class="panel">
@@ -1207,14 +1296,66 @@
         alert('CSV 파싱 실패: ' + err.message);
       }
     });
-    $('#set-keysave').addEventListener('click', () => {
-      llm.setKey($('#set-key').value, $('#set-keyremember').checked);
-      $('#set-keystate').textContent = llm.hasKey() ? '✅ 키 설정됨' : '키 미설정 (룰베이스 모드)';
-      $('#set-key').value = '';
+    renderLlmForm();
+  }
+
+  // LLM 설정 폼 — 프로바이더 전환 시 부분 리렌더
+  function renderLlmForm() {
+    const wrap = $('#llm-form');
+    if (!wrap) return;
+    const conf = llm.loadConf();
+    const prov = llm.PROVIDERS[conf.provider] || llm.PROVIDERS[llm.DEFAULT_PROVIDER];
+    const hasKey = !!llm.getKey(conf.provider);
+    const models = prov.models || [];
+    wrap.innerHTML = `
+      <div class="form-row">
+        <label>프로바이더</label>
+        <select id="llm-provider">
+          ${Object.entries(llm.PROVIDERS).map(([id, p]) => `<option value="${id}" ${id === conf.provider ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+        </select>
+        <label>모델</label>
+        <input type="text" id="llm-model" list="llm-model-list" value="${esc(conf.model || prov.defaultModel)}" placeholder="${esc(prov.defaultModel || '모델명 입력')}" style="width:220px">
+        <datalist id="llm-model-list">${models.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
+      </div>
+      ${prov.needsBaseUrl ? `
+      <div class="form-row">
+        <label>Base URL</label>
+        <input type="text" id="llm-baseurl" value="${esc(conf.baseUrl || '')}" placeholder="http://사내서버:8000/v1" style="flex:1">
+        <span class="faint">/chat/completions 를 붙여 호출합니다</span>
+      </div>` : ''}
+      <div class="form-row">
+        <label>API 키</label>
+        <input type="password" id="llm-key" placeholder="${esc(prov.keyPlaceholder)}${hasKey ? ' (설정됨 — 변경 시에만 입력)' : ''}" style="flex:1" autocomplete="off">
+        <label class="chk"><input type="checkbox" id="llm-remember" ${conf.remember ? 'checked' : ''}> 이 브라우저에 저장</label>
+      </div>
+      <div class="form-row">
+        <button class="btn primary small" id="llm-save">저장</button>
+        <button class="btn small" id="llm-clearkey">이 프로바이더 키 삭제</button>
+        <span class="faint" id="llm-state">${llm.ready(conf) ? `✅ 사용 준비됨 (${esc(prov.name)} · ${esc(conf.model)})` : (prov.allowEmptyKey ? 'Base URL/모델을 저장하면 활성화됩니다' : '키 미설정 (룰베이스 모드)')}</span>
+      </div>
+    `;
+    $('#llm-provider').addEventListener('change', e => {
+      const next = llm.loadConf();
+      next.provider = e.target.value;
+      next.model = (llm.PROVIDERS[next.provider] || {}).defaultModel || '';
+      llm.saveConf(next);
+      renderLlmForm();
     });
-    $('#set-keyclear').addEventListener('click', () => {
-      llm.clearKey();
-      $('#set-keystate').textContent = '키 미설정 (룰베이스 모드)';
+    $('#llm-save').addEventListener('click', () => {
+      const next = llm.loadConf();
+      next.provider = $('#llm-provider').value;
+      next.model = $('#llm-model').value.trim();
+      next.remember = $('#llm-remember').checked;
+      const bu = $('#llm-baseurl');
+      if (bu) next.baseUrl = bu.value.trim().replace(/\/+$/, '');
+      llm.saveConf(next);
+      const keyVal = $('#llm-key').value;
+      if (keyVal.trim()) llm.setKey(next.provider, keyVal, next.remember);
+      renderLlmForm();
+    });
+    $('#llm-clearkey').addEventListener('click', () => {
+      llm.clearKey($('#llm-provider').value);
+      renderLlmForm();
     });
   }
 

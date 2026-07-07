@@ -8,6 +8,7 @@ const ontology = require(path.join(__dirname, '../js/ontology.js'));
 const equip = require(path.join(__dirname, '../js/analytics/equipment.js'));
 const health = require(path.join(__dirname, '../js/analytics/health.js'));
 const patterns = require(path.join(__dirname, '../js/analytics/patterns.js'));
+const adv = require(path.join(__dirname, '../js/analytics/advanced.js'));
 const simulator = require(path.join(__dirname, '../js/simulator.js'));
 const report = require(path.join(__dirname, '../js/report.js'));
 
@@ -129,7 +130,7 @@ t('classifyTag — ISA-5.1 문자 해석', () => {
 t('defaultModel — 구조/조회', () => {
   const m = ontology.defaultModel();
   const assets = ontology.listAssets(m);
-  assert(assets.length === 4);
+  assert(assets.length === 12);
   const p = ontology.findAsset(m, 'P-101A');
   assert(p && p.class === 'CP' && p.tags.length === 8);
   assert(ontology.listTags(m).some(t => t.id === 'PDT-306'));
@@ -260,6 +261,127 @@ t('시계열 — 선형 추세 예측 + 한계도달', () => {
   // 100→110은 (110-99.5)/0.5 ≈ 21스텝 후
   const stepsAway = (hit.t - t4[99]) / 3600000;
   assert(stepsAway > 10 && stepsAway < 35, `도달 ${stepsAway}스텝`);
+});
+
+console.log('== advanced.js (논문 기반 기법) ==');
+t('Matrix Profile — 주입한 형태 이상이 최상위 디스코드', () => {
+  // 정현파에 한 구간만 파형 왜곡 주입
+  const ts = [];
+  for (let i = 0; i < 600; i++) {
+    let v = Math.sin(i * 0.35) + Math.sin(i * 0.11) * 0.4;
+    if (i >= 300 && i < 325) v = 1.6; // 평탄 이상 구간 (형태 이상)
+    ts.push(v);
+  }
+  const mp = adv.matrixProfile(ts, 30, { topK: 2 });
+  assert(mp && mp.discords.length);
+  assert(mp.discords.some(d => d.idx >= 270 && d.idx <= 330), `디스코드 위치 ${mp.discords.map(d => d.idx)}`);
+});
+t('Isolation Forest — 밀집 정상 + 산점 이상', () => {
+  const rnd = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(3);
+  const X = [];
+  for (let i = 0; i < 500; i++) X.push([rnd(), rnd()]);
+  X.push([5, 5]); X.push([-4, 6]);
+  const res = adv.isolationForest(X, { seed: 1 });
+  const normalMax = Math.max(...res.scores.slice(0, 500));
+  assert(res.scores[500] > 0.6 && res.scores[501] > 0.6, `이상점수 ${res.scores[500].toFixed(2)}, ${res.scores[501].toFixed(2)}`);
+  assert(res.scores[500] > normalMax, '이상점이 정상 최대보다 높아야');
+});
+t('ECOD — 꼬리 이상 검출', () => {
+  const rnd = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(5);
+  const X = [];
+  for (let i = 0; i < 400; i++) X.push([rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1]);
+  X.push([9, -9, 9]);
+  const res = adv.ecod(X);
+  const mean = res.scores.slice(0, 400).reduce((a, b) => a + b, 0) / 400;
+  assert(res.scores[400] > mean * 2.5, `ECOD ${res.scores[400].toFixed(2)} vs 평균 ${mean.toFixed(2)}`);
+});
+t('PELT — 평균/분산 변화점 검출', () => {
+  const rnd = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(9);
+  const gauss = () => { let u = rnd() || 1e-9, v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const xs = [];
+  for (let i = 0; i < 300; i++) xs.push(gauss());
+  for (let i = 0; i < 300; i++) xs.push(3 + gauss());       // 평균 이동
+  const res = adv.pelt(xs);
+  assert(res.changepoints.some(c => Math.abs(c - 300) < 30), `변화점 ${res.changepoints}`);
+});
+t('지수 열화 RUL — 가속 추세의 임계 도달 시점', () => {
+  const t0 = 1751000000000;
+  const ts = [], ys = [];
+  for (let i = 0; i < 120; i++) {
+    ts.push(t0 + i * 3600000);
+    ys.push(50 + 2 * Math.exp(0.025 * i)); // 지수 열화
+  }
+  const fit = adv.expDegradationFit(ts, ys);
+  assert(fit && fit.beta > 0.015 && fit.beta < 0.04, `beta=${fit && fit.beta}`);
+  const hit = fit.timeToThreshold(90);
+  assert(hit && hit > ts[119], 'RUL 미래 시점');
+  // 해석해: 90 = 50 + 2e^{0.025h} → h = ln(20)/0.025 ≈ 119.8h → 마지막 시점(119h) 직후
+  const hoursFromT0 = (hit - t0) / 3600000;
+  assert(hoursFromT0 > 110 && hoursFromT0 < 135, `도달 ${hoursFromT0.toFixed(1)}h`);
+});
+
+console.log('== 신규 설비 시나리오 통합 (조사 기반 고장모드) ==');
+function topMode(assetId, scnId) {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: scnId, startFrac: 0.45, endFrac: 1.35 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, assetId);
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.ok, `${assetId}: ${an.reason}`);
+  return { an, top: an.candidates[0] };
+}
+t('FV-101 스틱션 → CV-STIC 1위', () => {
+  const { top } = topMode('FV-101', 'fv101_stiction');
+  assert(top && top.mode.id === 'CV-STIC' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('T-401 플러딩 → DC-FLOOD 1위', () => {
+  const { top } = topMode('T-401', 't401_flooding');
+  assert(top && top.mode.id === 'DC-FLOOD' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('F-501 코킹 → FH-COKE 1위', () => {
+  const { top } = topMode('F-501', 'f501_coking');
+  assert(top && top.mode.id === 'FH-COKE' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('VFD-401 냉각 열화 → VF-COOL 1위', () => {
+  const { top } = topMode('VFD-401', 'vfd401_cooling');
+  assert(top && top.mode.id === 'VF-COOL' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('TR-101 누유 → TR-OIL 1위', () => {
+  const { top } = topMode('TR-101', 'tr101_oil');
+  assert(top && top.mode.id === 'TR-OIL' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('CT-601 충전재 오염 → CT-FILL 1위', () => {
+  const { top } = topMode('CT-601', 'ct601_fouling');
+  assert(top && (top.mode.id === 'CT-FILL' || top.mode.id === 'CT-DIST') && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('C-202 밸브 누설 → RC-VLV 1위', () => {
+  const { top } = topMode('C-202', 'c202_valve');
+  assert(top && top.mode.id === 'RC-VLV' && top.score > 0.4, `1위=${top && top.mode.id} ${top && top.score.toFixed(2)}`);
+});
+t('정상 신규 설비 — 시나리오 없으면 높은 건강지수', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  for (const id of ['FV-101', 'T-401', 'F-501', 'VFD-401', 'TR-101', 'CT-601', 'C-202', 'M-401']) {
+    const a = ontology.findAsset(m, id);
+    const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+    const h = health.computeHealth(an);
+    assert(h.score >= 75, `${id} 건강지수 ${h.score}`);
+  }
+});
+t('adv 통합 — 베어링 시나리오에서 온셋/합의 검출', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'p101a_bearing', startFrac: 0.45, endFrac: 1.35 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'P-101A');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.adv, 'adv 존재');
+  assert(an.adv.iforest.recentFrac > 0.3, `iforest ${an.adv.iforest.recentFrac}`);
+  assert(an.adv.onset, 'PELT 온셋 검출');
+  // 온셋은 시나리오 시작(45%) 이후여야
+  const t45 = s.series['TT-103'].t[Math.floor(s.series['TT-103'].t.length * 0.40)];
+  assert(an.adv.onset.t >= t45, `온셋 ${new Date(an.adv.onset.t).toISOString()}`);
 });
 
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);

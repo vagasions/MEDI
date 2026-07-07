@@ -44,12 +44,41 @@
       id: 'p101b_motor', name: 'P-101B 모터 권선 과열', asset: 'P-101B',
       desc: '권선온도 추세 상승 + 전류 미세 증가 — 냉각 불량 재현',
     },
+    fv101_stiction: {
+      id: 'fv101_stiction', name: 'FV-101 제어밸브 스틱션', asset: 'FV-101',
+      desc: '고착-미끄럼으로 유량 루프 리미트사이클(OP 톱니파+PV 사각파) 발생',
+    },
+    t401_flooding: {
+      id: 't401_flooding', name: 'T-401 증류탑 플러딩 접근', asset: 'T-401',
+      desc: '차압 상승 + 차압 변동성 증가 + 온도 프로파일 붕괴',
+    },
+    f501_coking: {
+      id: 'f501_coking', name: 'F-501 분해로 튜브 코킹', asset: 'F-501',
+      desc: '동일 COT에서 TMT 완만 상승(~1°F/day) + 연료 증가',
+    },
+    vfd401_cooling: {
+      id: 'vfd401_cooling', name: 'VFD-401 인버터 냉각 열화', asset: 'VFD-401',
+      desc: '팬/필터 열화로 부하 대비 방열판 온도 잔차 상승',
+    },
+    tr101_oil: {
+      id: 'tr101_oil', name: 'TR-101 변압기 누유', asset: 'TR-101',
+      desc: '온도 보정 유위가 서서히 하강',
+    },
+    ct601_fouling: {
+      id: 'ct601_fouling', name: 'CT-601 냉각탑 충전재 오염', asset: 'CT-601',
+      desc: '접근온도차(냉수−습구) 상승 — 팬으로 회복 불가한 유형',
+    },
+    c202_valve: {
+      id: 'c202_valve', name: 'C-202 왕복동압축기 밸브 누설', asset: 'C-202',
+      desc: '단열 잔차·토출온도 상승 + 토출량 감소 (왕복동 정지원인 1위)',
+    },
   };
 
-  // 기본 데모: 2개 시나리오가 이미 진행 중 (베어링 마모 60%, 파울링 45%)
+  // 기본 데모: 3개 시나리오가 이미 진행 중
   const DEFAULT_ACTIVE = [
     { id: 'p101a_bearing', startFrac: 0.45, endFrac: 1.35 },  // 히스토리 45% 지점 시작, 아직 진행중
     { id: 'e301_fouling', startFrac: 0.25, endFrac: 1.8 },
+    { id: 'fv101_stiction', startFrac: 0.55, endFrac: 1.2 },
   ];
 
   function makeSim(opts) {
@@ -112,6 +141,9 @@
       const hrs = (t0 + i * stepMs) / 3600000;
       return Math.sin(2 * Math.PI * ((hrs % 24) / 24) - 1.2);
     }
+
+    // FV-101 제어루프 상태 (스틱션 시뮬레이션 — 적분형 제어기 + 고착-미끄럼 밸브)
+    let fvOp = 62, fvZt = 62, fvPv = 110;
 
     for (let i = 0; i < n; i++) {
       const L = plantLoad(i);      // 0.78~0.98
@@ -199,6 +231,119 @@
         put('TT-301', i, hotIn); put('TT-302', i, hotOut);
         put('TT-303', i, coldIn); put('TT-304', i, coldOut);
         put('FT-305', i, hotFlow); put('PDT-306', i, dp);
+      }
+
+      // ===== FV-101 유량 제어밸브 (스틱션 시뮬레이션) =====
+      {
+        const stc = activeScn('fv101_stiction');
+        const pStc = stc ? progress(stc, i) : 0;
+        const sp = 110 * L;
+        // 적분형 제어기 (스틱션 없으면 안정 수렴)
+        fvOp += 0.10 * (sp - fvPv);
+        fvOp = Math.max(8, Math.min(92, fvOp));
+        // 고착-미끄럼: |OP-개도| > 데드밴드일 때만 미끄럼 점프 (Choudhury 2-파라미터 간이형)
+        const dead = 0.4 + 6.5 * pStc;
+        if (Math.abs(fvOp - fvZt) > dead) {
+          fvZt += (fvOp - fvZt) - Math.sign(fvOp - fvZt) * dead * 0.55;
+        }
+        fvPv = fvZt * 1.32 * (0.96 + 0.04 * L) + gauss() * 1.0;
+        put('FT-431', i, fvPv); put('ZT-432', i, fvZt); put('FY-433', i, fvOp);
+      }
+
+      // ===== T-401 탈프로판탑 =====
+      {
+        const fld = activeScn('t401_flooding');
+        const pFld = fld ? progress(fld, i) : 0;
+        const feed = 95 * L + gauss() * 1.4;
+        let dpTop = 4.0 * Math.pow(feed / 95, 1.7) + 3.2 * pFld + gauss() * 0.09;
+        if (pFld > 0.25 && rand() < 0.2 * pFld) dpTop += rand() * 1.4; // 전조 맥동
+        const dpBot = 4.6 * Math.pow(feed / 95, 1.6) + 1.1 * pFld + gauss() * 0.1;
+        const topT = 48 + 1.5 * (L - 0.88) * 2 + gauss() * 0.35;
+        const trayT = topT + 22 - 9 * pFld + gauss() * 0.45; // 플러딩 시 프로파일 붕괴
+        put('FT-441', i, feed); put('PDT-442', i, dpTop); put('PDT-443', i, dpBot);
+        put('TT-444', i, trayT); put('TT-445', i, topT);
+        put('PT-446', i, 16.5 + 0.4 * (L - 0.88) + gauss() * 0.07);
+      }
+
+      // ===== F-501 분해로 =====
+      {
+        const cok = activeScn('f501_coking');
+        const pCok = cok ? progress(cok, i) : 0;
+        const cot = 385 + 4 * (L - 0.88) * 2 + gauss() * 1.1; // COT는 제어됨
+        const fuel = 42 * L * (1 + 0.11 * pCok) + gauss() * 0.7;
+        const tmt = 540 + 20 * (L - 0.88) * 2 + 40 * pCok + gauss() * 2.2;
+        const o2 = 2.8 - 0.5 * (L - 0.88) * 2 + gauss() * 0.22;
+        const draft = -1.2 + gauss() * 0.16;
+        // 코킹은 복사부 현상 — 스택온도 영향은 완만 (대류부 오염과의 감별점)
+        const stack = 315 + 10 * (L - 0.88) * 2 + 7 * pCok + gauss() * 2.0;
+        put('TT-451', i, tmt); put('TT-452', i, cot); put('FT-453', i, fuel);
+        put('AT-454', i, Math.max(0.3, o2)); put('PT-455', i, draft); put('TT-456', i, stack);
+      }
+
+      // ===== TR-101 주변압기 =====
+      {
+        const oil = activeScn('tr101_oil');
+        const pOil = oil ? progress(oil, i) : 0;
+        const loadI = 1000 * L + gauss() * 14;
+        const ambT = 18 + 7 * amb + gauss() * 0.4;
+        const K = loadI / 1300;
+        const topOil = ambT + 40 * Math.pow(K / 0.7, 1.6) + gauss() * 0.6;
+        const wind = topOil + 15 * Math.pow(K / 0.7, 1.6) + gauss() * 0.7;
+        const level = 46 + 0.45 * (topOil - 55) - 13 * pOil + gauss() * 0.5; // 유온 팽창 + 누유
+        const h2 = 10 + gauss() * 1.4;
+        put('TT-421', i, topOil); put('TT-422', i, wind); put('IT-423', i, loadI);
+        put('LT-424', i, level); put('TT-425', i, ambT); put('AT-426', i, Math.max(0, h2));
+      }
+
+      // ===== VFD-401 인버터 + M-401 전동기 =====
+      {
+        const col = activeScn('vfd401_cooling');
+        const pCol = col ? progress(col, i) : 0;
+        const freq = 44 + 9 * L + gauss() * 0.25;
+        const outI = 100 * L + gauss() * 1.4;
+        const pwr = 66 * Math.pow(L, 1.9) + gauss() * 0.8;
+        const hs = 38 + 30 * Math.pow(outI / 110, 2) + 2 * amb + 14 * pCol + gauss() * 0.7;
+        const dcv = 650 + 6 * Math.sin(i / 97) + gauss() * 2.4;
+        put('TT-411', i, hs); put('ET-412', i, dcv); put('IT-413', i, outI);
+        put('ST-414', i, freq); put('JT-415', i, pwr);
+        // M-401 (VFD 부하와 연동)
+        const mI = outI * 0.97 + gauss() * 0.9;
+        put('IT-401', i, mI);
+        put('TT-403', i, 76 + 42 * Math.pow(mI / 105, 2) + 2 * amb + gauss() * 0.9);
+        put('TT-404', i, 47 + 10 * (L - 0.8) * 2 + amb + gauss() * 0.55);
+        put('VT-405', i, Math.max(0.3, 1.6 + 0.4 * (L - 0.8) * 3 + gauss() * 0.12));
+        put('ST-406', i, freq * 29.5 + gauss() * 3);
+      }
+
+      // ===== CT-601 냉각탑 =====
+      {
+        const fil = activeScn('ct601_fouling');
+        const pFil = fil ? progress(fil, i) : 0;
+        const ambT = 20 + 6 * amb + gauss() * 0.4;
+        const wb = ambT - 3.5; // 습구 근사
+        const approach = 4.5 + 3.6 * pFil + gauss() * 0.25;
+        const cold = wb + approach;
+        const hot = cold + 8 * L + gauss() * 0.35;
+        const fanP = 92 + 12 * (L - 0.88) * 2 + 5 * pFil + gauss() * 1.6; // 오염 시 팬 증속 시도
+        put('TT-461', i, hot); put('TT-462', i, cold); put('TT-463', i, ambT);
+        put('JT-464', i, fanP); put('FT-465', i, 1800 * L + gauss() * 22);
+      }
+
+      // ===== C-202 부스터 왕복동압축기 =====
+      {
+        const vlv = activeScn('c202_valve');
+        const pVlv = vlv ? progress(vlv, i) : 0;
+        const Ps = 3.2 + 0.3 * (L - 0.88) + gauss() * 0.05;
+        const Pd = 12.5 + 1.4 * (L - 0.88) * 2 + gauss() * 0.12;
+        const Ts = 32 + 2.5 * amb + gauss() * 0.5;
+        // 단열 토출온도 (k=1.25) — 밸브 누설 시 재압축으로 초과 상승
+        const r = (Pd + 1.03) / (Ps + 1.03);
+        const tdIdeal = (Ts + 273.15) * Math.pow(r, 0.2) - 273.15;
+        const Td = tdIdeal * 0.93 + 16 * pVlv + gauss() * 1.0;
+        const cap = 950 * L * (1 - 0.07 * pVlv) + gauss() * 9;
+        const pack = 64 + 10 * (L - 0.88) * 2 + gauss() * 0.7;
+        put('PT-471', i, Ps); put('PT-472', i, Pd); put('TT-473', i, Ts);
+        put('TT-474', i, Td); put('FT-475', i, cap); put('TT-476', i, pack);
       }
     }
 
