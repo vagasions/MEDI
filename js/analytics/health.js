@@ -22,6 +22,29 @@
     if (!analysis || !analysis.ok) return { score: null, grade: 'unknown', parts: [] };
     const parts = [];
 
+    // 0) 보호계전기 트립(86 록아웃) — 설비 정지 상태. 통계 감점은 정지를 재서술할 뿐이므로
+    //    트립 감점만 적용하고 조기 반환 (원인 규명·리셋 전 재기동 금지가 메시지의 전부)
+    const digitals = Object.entries(analysis.digital || {});
+    const tripEntry = digitals.find(([, d]) => d.trip && d.state === 1);
+    if (tripEntry) {
+      parts.push({ name: `보호계전기 트립 (${tripEntry[0]})`, penalty: 70, detail: '86 록아웃 래치 — 원인 규명·리셋 전 재기동 금지' });
+      for (const [tagId, d] of digitals) {
+        if (!d.trip && d.state === 1) parts.push({ name: `알람 접점 활성 (${tagId})`, penalty: 5, detail: d.desc });
+      }
+      const score = clamp(Math.round(100 - parts.reduce((a, p) => a + p.penalty, 0)), 0, 100);
+      return { score, grade: 'alarm', parts };
+    }
+
+    // 0b) 알람 접점(49 열동 등) 활성 / 접점 채터링
+    for (const [tagId, d] of digitals) {
+      if (!d.trip && d.state === 1 && d.role !== 'run_status') {
+        parts.push({ name: `알람 접점 활성 (${tagId})`, penalty: 18, detail: `${d.desc} — 최근 ${(d.activeFrac * 100).toFixed(0)}% 시간 활성` });
+      }
+      if (d.chatter > 0.3) {
+        parts.push({ name: `접점 채터링 (${tagId})`, penalty: clamp(d.chatter * 10, 0, 10), detail: `시간당 ${d.ratePerHour.toFixed(1)}회 상태변화 (베이스라인 ${d.baseRatePerHour.toFixed(1)}회)` });
+      }
+    }
+
     // 1) 다변량: T²/SPE 최근 위반율 (연속적 이탈일수록 큰 감점)
     if (analysis.mv) {
       const t2p = clamp(analysis.mv.t2ViolFrac * 40, 0, 22);
@@ -222,6 +245,38 @@
       });
     }
 
+    // 4.5) 디지털(접점) 신호 — 트립·알람접점·채터링 (전기/계기팀 대상)
+    const tripActive = analysis.tripped;
+    for (const [tagId, d] of Object.entries(analysis.digital || {})) {
+      if (d.trip) {
+        conds.push({
+          key: `${aid}.dig.trip.${tagId}`,
+          active: d.state === 1,
+          priority: PRIORITY.URGENT,
+          asset: aid,
+          message: `${asset.name}: 보호계전기 트립 (${tagId} ${d.desc}) — 86 록아웃 래치. 원인 규명·리셋 전 재기동 금지`,
+          evidence: { type: 'digital', kind: 'trip', tagId, lastChange: d.lastChange },
+        });
+      } else if (d.role !== 'run_status') {
+        conds.push({
+          key: `${aid}.dig.alarm.${tagId}`,
+          active: d.state === 1,
+          priority: PRIORITY.HIGH,
+          asset: aid,
+          message: `${asset.name}: 알람 접점 활성 (${tagId} ${d.desc}) — 최근 ${(d.activeFrac * 100).toFixed(0)}% 시간 활성`,
+          evidence: { type: 'digital', kind: 'alarm_contact', tagId, activeFrac: d.activeFrac },
+        });
+      }
+      conds.push({
+        key: `${aid}.dig.chatter.${tagId}`,
+        active: d.chatter > 0.3 && !tripActive,
+        priority: PRIORITY.MED,
+        asset: aid,
+        message: `${asset.name}: ${tagId} 접점 채터링 — 시간당 ${d.ratePerHour.toFixed(1)}회 상태변화 (베이스라인 ${d.baseRatePerHour.toFixed(1)}회). 결선 이완/접점 마모/코일 전압 점검`,
+        evidence: { type: 'digital', kind: 'chatter', tagId, ratePerHour: d.ratePerHour },
+      });
+    }
+
     // 5) 계기(트랜스미터) 이상 — 공정 알람과 별도 채널 (정비 계기팀 대상)
     const instrTags = new Set();
     for (const ins of analysis.instruments || []) {
@@ -244,10 +299,18 @@
       }
     }
 
-    // 알람 합리화 (ISA-18.2 first-out 그룹핑):
-    // 진단(고장모드) 알람이 활성이면 같은 설비의 하위 증상 알람(추세/T²/SPE)은 억제
-    // — 원인 1건에 알람 1건. 설계한계(limit) 알람은 안전 관련이라 항상 유지.
-    // 계기(instr) 알람은 별도 채널이라 억제 대상에서 제외.
+    // 알람 합리화 (ISA-18.2):
+    // (a) 상태기반 억제 — 보호 트립으로 정지된 설비는 아날로그 통계 알람 전체 억제
+    //     (정지된 모터의 저전류·저진동은 "이상"이 아니라 정지의 서술. 트립 알람 1건이 원인)
+    if (tripActive) {
+      for (const c of conds) {
+        if (/\.(fm|mv|trend|limit|instr)\./.test(c.key)) c.active = false;
+      }
+      return conds;
+    }
+    // (b) first-out 그룹핑 — 진단(고장모드) 알람이 활성이면 같은 설비의
+    //     하위 증상 알람(추세/T²/SPE)은 억제. 원인 1건에 알람 1건.
+    //     설계한계(limit)는 안전 관련이라 유지, 계기(instr)·디지털(dig)은 별도 채널이라 유지.
     const fmActive = conds.some(c => c.key.startsWith(`${aid}.fm.`) && c.active);
     if (fmActive) {
       for (const c of conds) {

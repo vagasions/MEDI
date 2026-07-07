@@ -278,7 +278,10 @@
   // seriesMap: {tagId: {t:[ms], v:[]}}, opts: {baseFrac, recentHours}
   function analyzeAsset(asset, seriesMap, opts) {
     const o = Object.assign({ baseFrac: 0.4, recentHours: 24, pcaVar: 0.9, alpha: 0.99 }, opts);
-    const tagIds = (asset.tags || []).map(t => t.id).filter(id => seriesMap[id]);
+    // 디지털(접점) 태그는 아날로그 통계 파이프라인(SPC/PCA)에서 분리 — 전용 이벤트 진단으로 처리
+    const analogTags = (asset.tags || []).filter(t => t.kind !== 'digital');
+    const digitalTags = (asset.tags || []).filter(t => t.kind === 'digital');
+    const tagIds = analogTags.map(t => t.id).filter(id => seriesMap[id]);
     const aligned = alignSeries(seriesMap, tagIds);
     if (aligned.t.length < 30) {
       return { assetId: asset.id, ok: false, reason: '데이터 부족 (정렬 후 30점 미만)' };
@@ -330,8 +333,13 @@
     // 3) 고장모드 후보 매칭
     const candidates = ontology.matchFailureModes(asset.class, observed);
 
+    // 3.4) 디지털(접점) 신호 진단 — 트립·알람접점·상태접점
+    const digital = digitalDiagnostics(digitalTags, seriesMap, o.recentHours);
+    const tripped = Object.values(digital).some(d => d.trip && d.state === 1);
+
     // 3.5) 계기(트랜스미터) 건전성 — 공정 이상과 분리해 계기 자체 고장을 검출
-    const instruments = instrumentHealth(asset, aligned, tagDiag, candidates, baseIdx, recentIdx);
+    // 트립으로 정지된 설비는 신호가 물리적으로 정지 상태 — 계기 진단(운전 중 전제) 생략
+    const instruments = tripped ? [] : instrumentHealth(asset, aligned, tagDiag, candidates, baseIdx, recentIdx);
 
     // 4) 다변량 감시 (PCA T²/SPE + Mahalanobis)
     let mvResult = null;
@@ -373,8 +381,44 @@
       assetId: asset.id, ok: true,
       aligned: { t: aligned.t, n, baseIdx, recentIdx },
       tagDiag, derived, derivedDiag, observed,
-      candidates, instruments, mv: mvResult, adv: advResult,
+      candidates, instruments, digital, tripped, mv: mvResult, adv: advResult,
     };
+  }
+
+  // ---------- 디지털(접점) 신호 진단 ----------
+  // 보호계전기 트립·Aux Relay·알람유닛 접점 등 0/1 신호는 아날로그와 문법이 다르다:
+  //  · 트립(86 록아웃)은 래치 — 접점 1 = 리셋 전 (원인 규명이 우선)
+  //  · 채터링: 시간당 상태변화(에지)가 베이스라인 대비 급증 = 접점 마모/결선 이완/코일전압 marginal
+  function digitalDiagnostics(digitalTags, seriesMap, recentHours) {
+    const out = {};
+    for (const t of digitalTags) {
+      const s = seriesMap[t.id];
+      if (!s || s.t.length < 10) continue;
+      const n = s.t.length;
+      const recStartMs = s.t[n - 1] - recentHours * 3600000;
+      // 베이스라인은 아날로그와 동일하게 히스토리 앞 40% (진행 중인 고장이 기준을 오염시키지 않게)
+      const baseEndMs = s.t[0] + (s.t[n - 1] - s.t[0]) * 0.4;
+      const b = s.v.map(x => (x >= 0.5 ? 1 : 0));
+      let recEdges = 0, baseEdges = 0, lastChange = null, recOn = 0, recN = 0;
+      const baseHours = Math.max((baseEndMs - s.t[0]) / 3600000, 0.5);
+      for (let i = 1; i < n; i++) {
+        const edge = b[i] !== b[i - 1];
+        if (edge) lastChange = s.t[i];
+        if (s.t[i] >= recStartMs) { if (edge) recEdges++; recOn += b[i]; recN++; }
+        else if (edge && s.t[i] <= baseEndMs) baseEdges++;
+      }
+      const recRate = recEdges / Math.max(recentHours, 0.5);
+      const baseRate = baseEdges / baseHours;
+      out[t.id] = {
+        role: t.role, desc: t.desc, trip: !!t.trip,
+        state: b[n - 1], activeFrac: recN ? recOn / recN : 0,
+        edgesRecent: recEdges, ratePerHour: recRate, baseRatePerHour: baseRate,
+        // 채터링 강도: 최근 에지율이 베이스라인의 3배 이상이며 시간당 1회를 넘을 때부터
+        chatter: clamp01((recRate - Math.max(3 * baseRate, 1)) / 5),
+        lastChange,
+      };
+    }
+    return out;
   }
 
   // ---------- 계기(트랜스미터) 건전성 진단 ----------
@@ -563,5 +607,5 @@
     };
   }
 
-  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis, instrumentHealth };
+  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis, instrumentHealth, digitalDiagnostics };
 });

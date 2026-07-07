@@ -82,6 +82,16 @@
       desc: '베어링 온도 트랜스미터 출력 고착 — flatline, 노이즈 완전 소실',
       frac: { startFrac: 0.45, endFrac: 0.8 },
     },
+    m401_trip: {
+      id: 'm401_trip', name: 'M-401 과열 → 49 알람 → 86 트립 (전기)', asset: 'M-401',
+      desc: '냉각 막힘 과열 진행 → 열동(49) 알람 접점 → 보호계전기(86) 트립 래치, 정지·냉각',
+      frac: { startFrac: 0.3, endFrac: 0.97 },
+    },
+    m401_relay_chatter: {
+      id: 'm401_relay_chatter', name: 'M-401 Aux Relay 접점 채터링 (전기)', asset: 'M-401',
+      desc: '운전상태 접점이 간헐 반복 단락 — 결선 이완/접점 마모/코일 전압 marginal 시그니처',
+      frac: { startFrac: 0.5, endFrac: 0.9 },
+    },
   };
 
   // 기본 데모: 3개 시나리오가 이미 진행 중
@@ -154,6 +164,7 @@
 
     // FV-101 제어루프 상태 (스틱션 시뮬레이션 — 적분형 제어기 + 고착-미끄럼 밸브)
     let fvOp = 62, fvZt = 62, fvPv = 110;
+    let m401Trip = 0, m401W = null; // 86 록아웃 래치 + 권선온도 상태(트립 후 냉각)
 
     for (let i = 0; i < n; i++) {
       const L = plantLoad(i);      // 0.78~0.98
@@ -316,13 +327,29 @@
         const dcv = 650 + 6 * Math.sin(i / 97) + gauss() * 2.4;
         put('TT-411', i, hs); put('ET-412', i, dcv); put('IT-413', i, outI);
         put('ST-414', i, freq); put('JT-415', i, pwr);
-        // M-401 (VFD 부하와 연동)
-        const mI = outI * 0.97 + gauss() * 0.9;
+        // M-401 (VFD 부하와 연동) — 트립 시나리오: 냉각 막힘 과열 → 49 알람 → 86 트립(래치) → 정지·냉각
+        const trip = activeScn('m401_trip');
+        const pTrip = trip ? progress(trip, i) : 0;
+        if (pTrip >= 0.85) m401Trip = 1; // 86 록아웃은 수동 리셋 전까지 유지
+        const mI = m401Trip ? Math.max(0, gauss() * 0.2) : outI * 0.97 * (1 + 0.06 * pTrip) + gauss() * 0.9;
+        const wTarget = m401Trip
+          ? 30 + 3 * amb                                             // 정지 후 주위온도로 냉각
+          : 76 + 42 * Math.pow(mI / 105, 2) + 2 * amb + 26 * pTrip;  // 냉각 막힘 과열 진행
+        if (m401W === null) m401W = wTarget;
+        m401W += 0.12 * (wTarget - m401W); // 열용량(1차 지연)
         put('IT-401', i, mI);
-        put('TT-403', i, 76 + 42 * Math.pow(mI / 105, 2) + 2 * amb + gauss() * 0.9);
-        put('TT-404', i, 47 + 10 * (L - 0.8) * 2 + amb + gauss() * 0.55);
-        put('VT-405', i, Math.max(0.3, 1.6 + 0.4 * (L - 0.8) * 3 + gauss() * 0.12));
-        put('ST-406', i, freq * 29.5 + gauss() * 3);
+        put('TT-403', i, m401W + gauss() * 0.9);
+        put('TT-404', i, (m401Trip ? 30 + amb : 47 + 10 * (L - 0.8) * 2 + amb) + gauss() * 0.55);
+        put('VT-405', i, m401Trip ? 0.05 : Math.max(0.3, 1.6 + 0.4 * (L - 0.8) * 3 + gauss() * 0.12));
+        put('ST-406', i, m401Trip ? 0 : freq * 29.5 + gauss() * 3);
+        // 디지털 접점: 운전상태(Aux) / 보호계전기 트립(86) / 열동 알람(49)
+        const chat = activeScn('m401_relay_chatter');
+        const pChat = chat ? progress(chat, i) : 0;
+        let runSt = m401Trip ? 0 : 1;
+        if (!m401Trip && pChat > 0.3 && rand() < 0.18 * pChat) runSt = 0; // 접점 채터링: 간헐 순간 단락
+        put('XS-407', i, runSt);
+        put('XA-408', i, m401Trip);
+        put('XA-409', i, m401Trip || pTrip > 0.55 ? 1 : 0); // 트립 전 열동(49) 알람 선행
       }
 
       // ===== CT-601 냉각탑 =====

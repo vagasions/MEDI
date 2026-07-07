@@ -437,5 +437,52 @@ t('INSTRUMENT_LIB/VENDOR_REFS — 구조·제조사 3사 존재', () => {
   }
 });
 
+console.log('== 디지털(접점) 신호 — 트립/채터링 ==');
+t('M-401 과열→86 트립: 래치·긴급 알람·상태기반 억제·건강 경고', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'm401_trip', startFrac: 0.3, endFrac: 0.97 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'M-401');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.tripped === true, '트립 래치');
+  assert(an.digital['XA-408'].state === 1 && an.digital['XA-409'].state === 1, '86+49 접점');
+  const h = health.computeHealth(an);
+  assert(h.grade === 'alarm' && h.score <= 40, `score ${h.score}`);
+  const conds = health.conditionsFromAnalysis(a, an, h);
+  const act = conds.filter(c => c.active);
+  assert(act.some(c => c.key === 'M-401.dig.trip.XA-408' && c.priority === health.PRIORITY.URGENT), '긴급 트립 알람');
+  // 상태기반 억제: 정지로 인한 통계 알람은 전부 억제
+  assert(!act.some(c => /\.(fm|mv|trend|limit|instr)\./.test(c.key)), `억제 실패: ${act.map(c => c.key).join(',')}`);
+});
+t('Aux Relay 채터링: 중간 알람 + 설비는 양호 유지', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'm401_relay_chatter', startFrac: 0.5, endFrac: 0.9 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'M-401');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.digital['XS-407'].chatter > 0.3, `chatter ${an.digital['XS-407'].chatter}`);
+  const h = health.computeHealth(an);
+  assert(h.score >= 85, `score ${h.score}`); // 접점 문제는 설비 열화가 아님 — 소폭 감점
+  const conds = health.conditionsFromAnalysis(a, an, h);
+  assert(conds.some(c => c.key === 'M-401.dig.chatter.XS-407' && c.active && c.priority === health.PRIORITY.MED), '채터링 알람');
+});
+t('정상 운전: 디지털 오탐 없음 + 아날로그 파이프라인에서 디지털 제외', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'M-401');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.tripped === false, '트립 없음');
+  for (const [id, d] of Object.entries(an.digital)) {
+    assert(d.chatter < 0.3, `${id} 채터 오탐`);
+    if (d.trip) assert(d.state === 0, `${id} 트립 오탐`);
+  }
+  assert(!an.tagDiag['XA-408'] && !an.mv.ids.includes('XA-408'), '디지털이 아날로그 분석에 섞이지 않음');
+  assert(ontology.classifyTag('XA-408').measure === 'digital', 'XA 분류');
+  const h = health.computeHealth(an);
+  assert(h.score >= 85, `score ${h.score}`);
+});
+
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
 process.exit(fail ? 1 : 0);

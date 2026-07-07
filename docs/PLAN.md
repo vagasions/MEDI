@@ -140,6 +140,30 @@ LOF·BOCPD·Spectral Residual 등은 오탐/파라미터 민감성으로 제외)
 - 온톨로지: `INSTRUMENT_LIB`(계기 고장모드 4종 — 메커니즘·확인 순서·벤더 레퍼런스) + `VENDOR_REFS`(Emerson/Yokogawa/ABB 기종·진단기능, 검증 표기).
 - 데모 시나리오: `pt202_plug`(노이즈 붕괴 후처리), `tt113_stuck`(flatline 후처리).
 
+### 3.9 전기/디지털(접점) 신호 — `digitalDiagnostics` (`js/analytics/equipment.js`)
+
+보호계전기 트립·Aux Relay·알람유닛 접점(0/1)은 아날로그 SPC와 문법이 다르므로 분리 처리
+(태그 `kind:'digital'` — PCA/SPC 파이프라인에서 자동 제외, ISA-5.1 X 문자(XA/XS) 자동분류).
+
+| 항목 | 로직 | 처리 |
+|---|---|---|
+| 트립(86 록아웃) | 접점 1 = 래치(리셋 전) | 긴급 알람 + 건강지수 즉시 경고 등급 + **상태기반 억제**(정지 설비의 fm/mv/trend/limit/instr 알람 전부 억제 — 정지된 모터의 저전류는 이상이 아니라 정지의 서술) |
+| 알람 접점(49 등) | 접점 1 + 최근 활성시간 비율 | 높음 알람 — 트립 선행 경고 |
+| 채터링 | 최근 에지율 > max(3×베이스라인, 1/h). 베이스라인은 앞 40% 고정 | 중간 알람 — 접점 마모/결선 이완/코일전압 (Omron 릴레이 FAQ 근거) |
+
+레퍼런스(공식 문서 검증): ANSI/IEEE C37.2 디바이스 번호, Bently Nevada 3500/3300 XL/System 1(API 670,
+OK 리밋·갭 전압), Atlas Copco Elektronikon Mk5/Nano·SMARTLINK, Yokogawa CENTUM VP·ProSafe-RS SOE·
+Exaopc/Exaquantum, GE Multilin 869, ISA 18.1(어나운시에이터 first-out). → `VENDOR_REFS` + 온톨로지 화면 표.
+
+데모: `m401_trip`(과열→49→86 래치→정지·냉각, 권선온도 1차지연 모델), `m401_relay_chatter`.
+
+### 3.10 진단 원리 쉬운 설명 (UI 내장)
+
+모든 진단 패널에 `explainBox()` 접이식 설명(❓ → 💡)을 내장 — 비유 중심(CUSUM=저금통,
+iForest=스무고개 고립, SPE=키-몸무게 관계 붕괴, 86 트립=자물쇠, 채터링=혼자 딸깍거리는 스위치).
+건강지수 감점 구조·알람 합리화(first-out·상태기반 억제) 설계 의도까지 화면에서 직접 설명.
+목적: 교육(5대 패턴 학습)과 실무 인수인계 시 "왜 이 판정인지"를 도구 없이 전달.
+
 ## 4. 자산 온톨로지
 
 - 구조: ISA-95 계층(사이트→구역→유닛→설비) + ISO 14224 설비클래스/고장모드 + ISA-5.1 태그 자동분류(PT/TT/FT/PDT/VT/IT…).

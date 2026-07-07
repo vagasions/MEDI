@@ -25,12 +25,13 @@
     TD: { ko: '온도차', measure: 'dt', unit: '°C' },
     V: { ko: '진동', measure: 'vibration', unit: 'mm/s' },
     W: { ko: '중량/힘', measure: 'weight', unit: 'kg' },
+    X: { ko: '이벤트/접점(디지털)', measure: 'digital', unit: '' }, // XA 알람접점, XS 상태접점
     Z: { ko: '위치(변위)', measure: 'position', unit: 'µm' },
   };
 
   // 태그명에서 측정종류 추정: "10-PT-1234A", "PDT-306", "TI_101" 등 처리
   function classifyTag(tagName) {
-    const m = String(tagName).toUpperCase().match(/(?:^|[^A-Z])((?:PD|TD)|[AEFIJLPSTVWZ])[TIRCEGSAQ]{0,3}[-_ ]?\d/);
+    const m = String(tagName).toUpperCase().match(/(?:^|[^A-Z])((?:PD|TD)|[AEFIJLPSTVWXZ])[TIRCEGSAQ]{0,3}[-_ ]?\d/);
     if (!m) return { measure: 'unknown', ko: '미분류', unit: '' };
     const key = m[1];
     const def = ISA51_FIRST[key];
@@ -583,6 +584,36 @@
         { measure: '온도 (TT)', models: 'TTH300 / TTF300', diag: '이중센서 드리프트 감시(허용편차 설정형), 센서 리던던시(평균+백업), 부식 검출 [검증]' },
       ],
     },
+    bently: {
+      name: 'Bently Nevada (Baker Hughes)',
+      items: [
+        { measure: '진동 (VT) — 대형 회전기계', models: '3500 Machinery Protection System + 3300 XL 근접 프로브', diag: 'API 670 기반 상시 보호(랙 타입). 채널별 OK 검출: 신호가 OK 리밋을 벗어나면 "NOT OK"(프로브/케이블 고장) — 갭 전압 중심 약 -9~-11V(3300 XL 8mm 기준) 이탈로 판별. 진동값이 갑자기 0 근처로 떨어지면 기계가 아니라 프로브/케이블 먼저 의심 [검증]' },
+        { measure: '상태감시 소프트웨어', models: 'System 1', diag: '3500 랙 데이터 기반 상태감시(궤도·스펙트럼·트렌드). 히스토리안(dataPARC)에는 보통 overall 값만 오므로, 본 시스템이 overall 추세 이상을 잡으면 System 1에서 스펙트럼 정밀진단하는 흐름 권장 [검증]' },
+      ],
+    },
+    atlasCopco: {
+      name: 'Atlas Copco (유틸리티/계장 공기 압축기)',
+      items: [
+        { measure: '압축기 컨트롤러', models: 'Elektronikon Mk5 / Mk5s Touch / Nano', diag: '엘리먼트 토출온도·압력·운전시간·서비스 카운터 감시, 알람/셧다운 이력 보관. SMARTLINK 원격감시로 이메일 경보 [검증]' },
+        { measure: '연동 방법', models: '—', diag: '컨트롤러 Modbus/게이트웨이로 토출온도·부하율을 히스토리안에 수집하면 본 시스템의 압축기 로직(온도 잔차·용량 추세)을 그대로 적용 가능' },
+      ],
+    },
+    yokogawaDcs: {
+      name: 'Yokogawa DCS/SIS',
+      items: [
+        { measure: 'DCS', models: 'CENTUM VP', diag: '알람/이벤트 저널 — 공정 알람·조작 이력. 외부 연계는 Exaopc(OPC A&E)·Exaquantum(PIMS) 경유 [검증]' },
+        { measure: 'SIS (트립)', models: 'ProSafe-RS', diag: 'SOE(밀리초 단위 사건순서기록) — 트립 시 무엇이 먼저였는지 확정 근거. CENTUM HIS에서 통합 조회 [검증]' },
+        { measure: '연동 방법', models: '—', diag: '트립/알람 접점을 XA/XS 태그로 히스토리안에 수집하면 본 시스템이 트립 감지·채터링·선행 알람 분석 수행. 정밀 시각은 SOE로 교차 확인' },
+      ],
+    },
+    protRelay: {
+      name: '보호계전기 / 전기 (ANSI·IEEE C37.2)',
+      items: [
+        { measure: '디바이스 번호', models: 'C37.2 표준', diag: '49 열동(과부하) · 50/51 순시/한시 과전류 · 27/59 부족/과전압 · 46 역상(불평형) · 66 기동횟수 제한 · 86 록아웃(수동 리셋) · 87 차동 · 94 트립 릴레이 [검증]' },
+        { measure: '모터 보호계전기', models: 'GE Multilin 869, ABB, Schneider 등', diag: '트립/알람 이벤트·고장 기록 내장. 트립·알람 접점(a/b접점)을 XA 태그로 수집 → 본 시스템이 아날로그 선행 징후(권선온도·전류)와 연계 분석 [검증]' },
+        { measure: 'Aux Relay / 알람유닛', models: 'ISA 18.1 어나운시에이터', diag: 'first-out 시퀀스(무엇이 먼저 떴는지) 표준. 접점 채터링(반복 단속)은 결선 이완·접점 마모·코일전압 marginal의 대표 증상 (Omron 릴레이 FAQ) [검증]' },
+      ],
+    },
     common: {
       name: '공통 표준',
       items: [
@@ -760,6 +791,9 @@
                     { id: 'TT-404', role: 'bearing_temp_nde', desc: '베어링 온도(NDE)', unit: '°C', lo: 35, hi: 85 },
                     { id: 'VT-405', role: 'vibration', desc: '진동(overall)', unit: 'mm/s', lo: 0, hi: 7.1 },
                     { id: 'ST-406', role: 'speed', desc: '회전수', unit: 'rpm', lo: 900, hi: 1800 },
+                    { id: 'XS-407', role: 'run_status', desc: '운전 상태 (Aux Relay 접점)', unit: '', kind: 'digital' },
+                    { id: 'XA-408', role: 'protection_trip', desc: '보호계전기 트립 (86 록아웃)', unit: '', kind: 'digital', trip: true },
+                    { id: 'XA-409', role: 'thermal_alarm', desc: '열동 알람 접점 (49)', unit: '', kind: 'digital' },
                   ],
                 },
               ],

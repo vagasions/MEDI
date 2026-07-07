@@ -243,6 +243,13 @@
     if (b) b.addEventListener('click', refreshData);
   }
 
+  // 접이식 "쉽게 설명" 박스 — items: [[용어, 비유 설명], ...]
+  function explainBox(title, items) {
+    return `<details class="explain"><summary>${esc(title)}</summary><div class="ex-body">${
+      items.map(([k, v]) => `<div class="ex-item"><span class="ex-k">${esc(k)}</span> — ${v}</div>`).join('')
+    }</div></details>`;
+  }
+
   // ---------- 뷰: 대시보드 ----------
   function viewDashboard(main) {
     const total = S.results.length;
@@ -285,7 +292,9 @@
             <div style="margin-top:4px"><span class="badge g-${h.grade}">${report.gradeKo(h.grade)}</span></div>
           </div>
         </div>
-        <div class="ac-fm">${top && top.score >= 0.4
+        <div class="ac-fm">${r.analysis && r.analysis.ok && r.analysis.tripped
+          ? '<span style="color:var(--alarm)">⚡ 보호계전기 트립 (86 록아웃) — 정지 중</span>'
+          : top && top.score >= 0.4
           ? `⚠ 의심: <span class="fm-name">${esc(top.mode.name)}</span> (일치도 ${(top.score * 100).toFixed(0)}%)`
           : '<span class="muted">유의미한 고장모드 징후 없음</span>'}${
           (r.analysis && r.analysis.ok && r.analysis.instruments && r.analysis.instruments.length)
@@ -347,14 +356,29 @@
         <div class="kpi"><div class="kpi-label">다변량 상태 (T² / SPE 위반율)</div><div class="kpi-value" style="font-size:16px;padding-top:8px">${an.mv ? `${(an.mv.t2ViolFrac * 100).toFixed(0)}% / ${(an.mv.speViolFrac * 100).toFixed(0)}%` : '-'}</div><div class="kpi-sub">최근 ${S.settings.recentHours}시간</div></div>
       </div>
 
+      ${explainBox('건강지수는 어떻게 계산되나요? (쉽게 설명)', [
+        ['감점 방식', '100점에서 시작해 <b>근거가 있는 항목만</b> 깎습니다 — 다변량 이탈, 고장모드 일치, 설계한계 접근, 트립/알람 접점. 어떤 항목에서 몇 점 깎였는지가 항상 함께 표시되므로 "왜 이 점수인지" 역추적이 됩니다.'],
+        ['등급', '85점 이상 양호 · 70~84 관찰 · 50~69 주의 · 50 미만 경고. 보호계전기 트립(86)이 걸려 있으면 통계와 무관하게 즉시 경고 등급입니다.'],
+        ['오탐 억제', '한 가지 원인이 여러 항목을 동시에 깎는 중복 감점은 40점 이후 체감(60%)되고, 최신 기법(iForest·ECOD) 감점은 고전 지표가 동조할 때만 반영됩니다.'],
+      ])}
+
       <div class="panel">
         <h2>주요 신호 트렌드 (베이스라인 대비)</h2>
+        ${explainBox('베이스라인 밴드와 σ(시그마)가 뭔가요?', [
+          ['베이스라인', '히스토리 <b>앞 40%</b> 구간을 "정상이었을 때"의 기준으로 삼습니다. 밴드(띠)는 그 시절 평균 ± 3σ 범위 — 신호가 띠를 벗어나 움직이면 기준에서 멀어진 것입니다.'],
+          ['σ(시그마) 단위', '신호마다 단위(°C, kg/cm²…)가 달라 비교가 안 되므로, "평소 출렁임의 몇 배나 움직였나"로 통일해 셉니다. +3σ = 평소 변동폭의 3배만큼 위로 이동.'],
+        ])}
         <div id="tag-charts" class="grid cols-2"></div>
       </div>
 
       <div class="panel">
         <h2>다변량 감시 — 여러 신호의 "관계"로 잡는 이상</h2>
         <div class="pattern-note">개별 태그가 정상범위여도 신호 간 상관구조가 무너지면(SPE↑) 설비 이상의 조기 신호입니다. 단순 임계값 알람으로는 잡히지 않는 유형입니다.</div>
+        ${explainBox('T²와 SPE, 쉽게 말하면?', [
+          ['T² (운전점 이탈)', '여러 신호를 한 점으로 묶어 "정상 운전 구름"에서 얼마나 멀어졌는지 재는 거리입니다. 구름 밖으로 나가면 운전 상태 자체가 낯설다는 뜻.'],
+          ['SPE (관계 붕괴)', '"토출압력과 전류는 항상 같이 움직인다" 같은 <b>신호 사이의 관계</b>가 깨졌는지 봅니다. 키가 큰데 몸무게가 그대로면 이상하듯 — 각 값이 전부 정상범위여도 관계가 깨지면 경보. 단순 임계값 알람이 절대 못 잡는 유형입니다.'],
+          ['기여도', '경보가 뜨면 어느 태그가 관계를 깼는지 지분(%)으로 지목합니다 — 현장에서 어디부터 볼지 알려주는 용도.'],
+        ])}
         <div class="grid cols-2">
           <div class="chart-box"><h3>Hotelling T² (운전점 이탈)</h3><canvas id="ch-t2"></canvas></div>
           <div class="chart-box"><h3>SPE/Q (상관구조 붕괴)</h3><canvas id="ch-spe"></canvas></div>
@@ -368,8 +392,30 @@
           Isolation Forest(ICDM 2008)·ECOD(TKDE 2022)가 <strong>비선형 복합 이상</strong>을, PELT 변화점(JASA 2012)이 <strong>열화 시작 시점</strong>을,
           Matrix Profile(ICDM 2016)이 <strong>과거에 없던 파형</strong>을 찾습니다. 두 검출기 합의 시에만 건강지수에 반영해 오탐을 억제합니다.
         </div>
+        ${explainBox('네 가지 기법, 쉽게 말하면?', [
+          ['Isolation Forest', '스무고개처럼 무작위 질문으로 데이터를 나눌 때 몇 번 만에 혼자 고립되면 이상치입니다. 정상 데이터는 무리 속에 있어 오래 걸립니다. 숲(트리 100개)의 평균 답이 점수.'],
+          ['ECOD', '각 신호의 히스토그램에서 값이 꼬리(극단)에 있는 정도를 전부 더한 점수. 조절할 파라미터가 <b>0개</b>라 튜닝 실수가 원천 차단됩니다.'],
+          ['PELT 변화점', '그래프를 "통계 성질이 같은 구간"으로 자동 분할합니다. 잘린 지점 = 열화가 시작된 시점 — 정비 이력과 대조할 때 유용.'],
+          ['Matrix Profile', '파형을 조각내 과거 전체와 대조해 <b>과거에 한 번도 없던 모양</b>을 찾습니다. 값의 크기가 아니라 "모양"의 이상을 봅니다.'],
+          ['RUL 근사', '열화 시작 이후 추세를 지수곡선으로 연장해 상한 도달 시점을 역산합니다. 어디까지나 근사치 — 정비 시기 "계획"의 참고용이지 보증이 아닙니다.'],
+          ['왜 합의를 요구하나', '두 검출기(iForest·ECOD)가 <b>모두</b> 이상이라 하고, 고전 지표(SPE/고장모드)까지 동조할 때만 점수에 반영합니다. 새로운 운전점 이동을 고장으로 오인하는 것을 막기 위해서입니다.'],
+        ])}
         <div id="adv-facts" style="margin-bottom:10px"></div>
         <div class="grid cols-2" id="adv-charts"></div>
+      </div>
+
+      <div class="panel" id="dig-panel" style="display:none">
+        <h2>전기/디지털 신호 — 트립 · 알람 접점 · 상태</h2>
+        <div class="pattern-note">
+          보호계전기 트립(86 록아웃), 열동 알람(49), Aux Relay 상태 접점 등 0/1 신호를 아날로그와 분리 진단합니다.
+          트립은 래치이므로 접점 1 = 리셋 전 상태, 반복 단속(채터링)은 결선·접점 문제의 대표 증상입니다. 정밀 사건순서는 SIS의 SOE 기록으로 교차 확인하세요.
+        </div>
+        ${explainBox('트립·채터링, 쉽게 말하면?', [
+          ['86 록아웃 트립', '한 번 걸리면 스스로 풀리지 않는 <b>자물쇠(래치)</b>입니다. 접점이 1이면 아직 리셋 전 — 원인을 밝히기 전에 재기동하면 같은 사고가 반복되므로, 선행 신호(권선온도·전류 추세)와 49 알람 순서를 먼저 봅니다.'],
+          ['숫자의 의미(ANSI C37.2)', '계전기 이름의 숫자는 세계 공통 약속: 49 열동(과부하) · 50/51 과전류 · 86 록아웃 · 87 차동. 도면과 알람 메시지에서 같은 번호를 쓰므로 그대로 통합니다.'],
+          ['채터링', '스위치가 혼자 딸깍거리는 것 — 접점 마모·결선 이완·코일 전압 부족의 대표 증상. 완전히 죽기 전에 "가끔 끊기는" 시기가 먼저 오므로, 이때 잡으면 계획 정비로 끝납니다.'],
+        ])}
+        <div id="dig-cards"></div>
       </div>
 
       <div class="panel">
@@ -378,11 +424,22 @@
           공정 이상과 <strong>계기 자체 고장</strong>(임펄스라인 막힘·출력 고착·드리프트·결선 노이즈)을 분리 진단합니다.
           스마트 트랜스미터 진단(Rosemount SPM · Yokogawa ILBD · ABB PILD)과 같은 신호 시그니처를 히스토리안 측에서 검사 — NAMUR NE 107 분류로 표시.
         </div>
+        ${explainBox('계기 고장은 어떻게 신호만 보고 아나요?', [
+          ['막힘 = 조용해짐', '임펄스라인이 막히면 계기가 공정에서 분리되어 <b>잔떨림(노이즈)이 사라집니다</b>. 값은 그대로인데 "너무 조용"하면 막힘 의심 — Rosemount SPM·Yokogawa ILBD·ABB PILD가 계기 안에서 하는 판정과 같은 원리입니다.'],
+          ['고착 = 완전 정지', '출력이 몇 시간째 소수점까지 똑같으면 flatline. 살아있는 공정 신호는 반드시 미세하게 떨립니다. (밸브 개도는 스틱션 때 원래 몇 시간 멈추므로 더 긴 기준 적용)'],
+          ['드리프트 = 혼자 이동', '연관된 다른 신호는 가만히 있는데 한 태그만 서서히 한 방향으로 가면, 공정보다 계기(영점 밀림) 가능성. 고장 사전으로 설명되는 경우(누유로 유위만 하강 등)는 제외합니다.'],
+          ['확정은 현장에서', '여기서의 판정은 "의심 단계"입니다. 트랜스미터의 HART 진단(NE 107 상태)으로 교차 확인 후 조치하세요.'],
+        ])}
         <div id="instr-cards"></div>
       </div>
 
       <div class="panel">
         <h2>고장모드 후보 (ISO 14224 라이브러리 매칭)</h2>
+        ${explainBox('일치도 %는 어떻게 나오나요?', [
+          ['증상 대조', '관측된 패턴 조합(베어링온도 상승 + 진동 상승 + 전류 상승…)을 고장 사전의 "증상 시그니처"와 대조해 가중 일치율을 냅니다.'],
+          ['우연 일치 방지', '증상 1~2개짜리 우연 일치는 점수를 자동으로 깎고(증거가 적을수록 보수적), "이 고장이면 반드시 보여야 하는데 안 보이는 증상"은 감점합니다 — 감별 포인트로 함께 표시.'],
+          ['활용법', '1위 후보의 권고 조치부터 확인하되, 일치도 40% 미만은 참고 수준으로만.'],
+        ])}
         <div id="fm-cards"></div>
       </div>
     `;
@@ -490,6 +547,35 @@
       fmEl.appendChild(div);
     }
 
+    // 전기/디지털 신호 카드
+    const digEntries = Object.entries(an.digital || {});
+    if (digEntries.length) {
+      $('#dig-panel').style.display = '';
+      const digEl = $('#dig-cards');
+      digEl.innerHTML = digEntries.map(([tagId, d]) => {
+        const isTrip = d.trip && d.state === 1;
+        const isAlm = !d.trip && d.state === 1 && d.role !== 'run_status';
+        const isChat = d.chatter > 0.3;
+        const stateTxt = d.trip ? (d.state ? '트립 (래치)' : '정상')
+          : d.role === 'run_status' ? (d.state ? '운전 중' : '정지')
+          : (d.state ? '알람 활성' : '정상');
+        const cls = isTrip ? 'g-alarm' : (isAlm || isChat) ? 'g-warn' : 'g-good';
+        return `
+          <div class="panel" style="background:var(--bg2)">
+            <h3 style="margin-top:0">${esc(tagId)} — ${esc(d.desc)}
+              <span class="badge ${cls}">${esc(stateTxt)}</span>
+              ${isChat ? '<span class="badge g-warn">채터링</span>' : ''}</h3>
+            <div style="font-size:12.5px" class="muted">
+              최근 24h: 상태변화 ${d.edgesRecent}회 (시간당 ${d.ratePerHour.toFixed(1)} · 평시 ${d.baseRatePerHour.toFixed(1)}) ·
+              활성시간 ${(d.activeFrac * 100).toFixed(0)}%
+              ${d.lastChange ? ` · 마지막 변화 ${new Date(d.lastChange).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}
+            </div>
+            ${isTrip ? '<div style="font-size:12.5px;margin-top:6px;color:var(--alarm)"><strong>86 록아웃 — 원인 규명·리셋 전 재기동 금지.</strong> 선행 신호(권선온도·전류·49 알람)와 SOE 기록으로 원인 추적.</div>' : ''}
+            ${isChat ? '<div style="font-size:12.5px;margin-top:6px"><strong>확인 순서</strong>: 단자 결선 조임 → 접점 마모/코일 전압 확인 → 릴레이 교체 검토 (채터링은 결선 이완·접점 마모·코일전압 marginal의 대표 증상)</div>' : ''}
+          </div>`;
+      }).join('');
+    }
+
     // 계기 건전성 카드
     const insEl = $('#instr-cards');
     const insList = an.instruments || [];
@@ -544,6 +630,11 @@
         <div class="tag-chips" id="tr-chips">
           ${allIds.map(id => `<button class="tag-chip ${S.trendSel.includes(id) ? 'on' : ''}" data-tag="${esc(id)}">${esc(id)}</button>`).join('')}
         </div>
+        ${explainBox('EWMA·런규칙, 쉽게 말하면?', [
+          ['EWMA', '최근 값에 더 큰 가중치를 준 평균선입니다. 저울 눈금이 조금씩 밀리는 것처럼 <b>작지만 지속되는 이동</b>을 원본 그래프보다 훨씬 빨리 알아챕니다. 주황 선이 점선 한계를 넘으면 위반.'],
+          ['CUSUM (알람에 사용)', '기준보다 조금씩 넘친 양을 저금통처럼 계속 모읍니다. 하루하루는 티가 안 나도 쌓이면 임계를 넘어 경보 — 1σ급 미세 이동에 가장 민감한 기법.'],
+          ['런규칙', '동전을 던져 앞면만 9번 연속 나오면 우연이 아니듯, 평균 위로만 연속 9점·연속 상승 6점 같은 "우연히 나오기 힘든 패턴"을 잡습니다(Western Electric/Nelson 규칙).'],
+        ])}
       </div>
       <div class="panel"><div id="tr-charts"></div></div>
       <div class="panel">
@@ -629,6 +720,13 @@
         회귀·분류·군집·이상탐지·시계열의 5대 패턴을 <strong>현재 로드된 데이터</strong>(데모/현장/CSV)로 직접 실행해 보는 실습 공간입니다.
         전부 룰베이스/통계 기법 — AI 불필요. 설정에서 <strong>내 업무 데이터(CSV)</strong>를 올리면 같은 분석을 바로 돌릴 수 있습니다.
       </div>
+      ${explainBox('5대 패턴을 한 문장씩으로', [
+        ['① 회귀', '"유량이 이만큼이면 전류는 이만큼"처럼 신호 사이의 <b>수식 관계</b>를 찾고, 관계에서 벗어나는 순간(잔차 증가)을 이상으로 봅니다.'],
+        ['② 분류', '값의 조합을 보고 상태에 <b>이름표</b>(정상/주의/경고)를 붙입니다 — 규칙 나무를 따라가는 방식이라 "왜 그 판정인지"가 항상 설명됩니다.'],
+        ['③ 군집', '비슷한 운전 상태끼리 <b>무리</b>를 짓습니다. 고부하/저부하 같은 운전모드가 저절로 나뉘고, 어느 무리에도 안 속하면 낯선 상태.'],
+        ['④ 이상탐지', '"정상 무리에서 얼마나 떨어졌나"를 점수로 냅니다. 여기서는 3가지 알고리즘(Mahalanobis·iForest·ECOD)을 바꿔가며 비교할 수 있습니다.'],
+        ['⑤ 시계열 예측', '추세를 앞으로 연장해 <b>한계 도달 시점</b>을 역산합니다 — 잔여수명(RUL)의 기본 아이디어.'],
+      ])}
       <div class="tabs">
         ${PATTERN_TABS.map(t => `<button class="tab ${S.patternTab === t.id ? 'active' : ''}" data-pt="${t.id}">${t.name}</button>`).join('')}
       </div>
@@ -941,6 +1039,12 @@
         생산팀이 말해주지 않아도 아는 것이 목표입니다. 알람은 <strong>m-of-n 지속성 + 오프딜레이</strong>(ISA-18.2)로 채터링을 억제하며,
         각 알람에는 근거(증상·기여 태그)와 권고 조치가 붙습니다.
       </div>
+      ${explainBox('알람이 적게 뜨는 이유 (설계 의도)', [
+        ['m-of-n 지속성', '한 번 스친 이상으로는 울리지 않고, 최근 3회 평가 중 2회 이상 지속돼야 확정합니다. 해제도 연속 2회 정상이어야 — 껐다켰다(채터링) 방지.'],
+        ['first-out 그룹핑', '고장모드가 확정되면 그 원인이 만든 하위 증상 알람(추세·다변량)은 자동으로 숨깁니다 — <b>원인 1건 = 알람 1건</b>. 어나운시에이터의 first-out(ISA 18.1)과 같은 사상.'],
+        ['상태기반 억제', '보호 트립으로 정지된 설비는 저전류·저진동이 "정상"이므로 통계 알람 전체를 억제하고 트립 알람 1건만 남깁니다.'],
+        ['우선순위', '긴급(트립·설계한계 이탈) > 높음(고장모드·알람접점) > 중간(계기·복합이상) > 낮음(추세 참고).'],
+      ])}
       <div class="grid cols-3" style="margin-bottom:16px">
         <div class="kpi ${active.length ? 'k-warn' : 'k-good'}"><div class="kpi-label">활성 + 확인됨</div><div class="kpi-value">${active.length}</div></div>
         <div class="kpi"><div class="kpi-label">최근 1시간 발생</div><div class="kpi-value">${lastHour}</div><div class="kpi-sub">ISA-18.2 권고: 시간당 12건 이하</div></div>

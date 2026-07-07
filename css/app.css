@@ -332,6 +332,23 @@ table.data tr:hover td { background: rgba(79,195,247,0.04); }
   border-radius: 0 8px 8px 0; margin: 8px 0; overflow-wrap: break-word;
 }
 
+/* 쉬운 설명(비유) 접이식 박스 */
+details.explain {
+  margin: 8px 0; border: 1px dashed var(--line-soft); border-radius: 8px;
+  background: rgba(79,195,247,0.03); font-size: 12.5px;
+}
+details.explain summary {
+  cursor: pointer; padding: 8px 12px; color: var(--accent); font-weight: 600;
+  list-style: none; user-select: none;
+}
+details.explain summary::before { content: '❓ '; }
+details.explain[open] summary::before { content: '💡 '; }
+details.explain summary::-webkit-details-marker { display: none; }
+details.explain .ex-body { padding: 2px 14px 12px; color: var(--text-dim); line-height: 1.65; }
+details.explain .ex-body b, details.explain .ex-body strong { color: var(--text); }
+details.explain .ex-item { margin: 6px 0; }
+details.explain .ex-item .ex-k { color: var(--text); font-weight: 600; }
+
 .chart-box { position: relative; min-width: 0; overflow: hidden; }
 .chart-box h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
