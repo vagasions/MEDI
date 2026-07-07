@@ -71,7 +71,10 @@
         issues.push({ code: 'range_suspect', sev: 'warn', msg: `값의 ${(outside / n * 100).toFixed(0)}%가 설정범위(${o.lo}~${o.hi}) 밖 (실측 ${mn.toFixed(1)}~${mx.toFixed(1)}) — ${hintFor(Math.abs(mx) > 1e-12 ? mx / o.hi : 0)}. 계산 태그로 보정 가능` });
       } else if (!allSame && (mx - mn) < span * 0.02 && Math.abs(mx) < span * 0.05) {
         // 값이 살아 있는데 설정범위에 비해 너무 작음 — 0-1 값을 0-100 범위로 설정한 유형
-        issues.push({ code: 'range_suspect', sev: 'warn', msg: `실측(${mn.toFixed(3)}~${mx.toFixed(3)})이 설정범위(${o.lo}~${o.hi}) 대비 극히 작음 — ${hintFor(o.hi / Math.max(Math.abs(mx), 1e-12))}. 계산 태그 "[태그]*100" 등으로 보정 가능` });
+        const ratio = o.hi / Math.max(Math.abs(mx), 1e-12);
+        const factor = ratio > 50 && ratio < 200 ? 100 : ratio > 5 && ratio < 20 ? 10 : null;
+        issues.push({ code: 'range_suspect', sev: 'warn', fix: factor ? { factor } : undefined,
+          msg: `실측(${mn.toFixed(3)}~${mx.toFixed(3)})이 설정범위(${o.lo}~${o.hi}) 대비 극히 작음 — ${hintFor(ratio)}` });
       }
     }
     return issues;

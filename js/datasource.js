@@ -38,7 +38,7 @@
     let tags = [];
     let lastError = null;
 
-    async function req(path) {
+    async function reqOnce(path) {
       const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       const timer = ctl ? setTimeout(() => ctl.abort(), o.timeout) : null;
       try {
@@ -46,6 +46,16 @@
         if (!res.ok) throw new Error(`HTTP ${res.status} — ${path}`);
         return await res.json();
       } finally { if (timer) clearTimeout(timer); }
+    }
+    // 자동 재시도(1s/2s 백오프) — 일시 장애 자가 회복
+    async function req(path, tries) {
+      const n = tries || 3;
+      let last;
+      for (let i = 0; i < n; i++) {
+        try { return await reqOnce(path); }
+        catch (e) { last = e; if (i < n - 1) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i))); }
+      }
+      throw last;
     }
 
     return {

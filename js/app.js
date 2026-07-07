@@ -130,9 +130,49 @@
       S.lastUpdate = Date.now();
     } catch (e) {
       S.loadError = e.message || String(e);
+      // 오토파일럿: 게이트웨이 연결 실패 시 자동 복구 시도 (세션당 1회)
+      if (S.settings.mode === 'gateway' && !S.autopilotTried) {
+        S.autopilotTried = true;
+        const fixed = await autoConnect();
+        if (fixed) { S.loading = false; return refreshData(); }
+      }
     }
     S.loading = false;
     render();
+  }
+
+  // ---------- 오토파일럿: 자동 연결/복구 ----------
+  // ① 게이트웨이 주소 후보를 자동 시도 → ② 게이트웨이 오토파일럿(경로 탐지·자동 보정) 실행
+  // 반환: 데이터 경로가 살아났으면 true
+  async function autoConnect() {
+    const cands = [];
+    const push = u => { const c = (u || '').trim().replace(/\/+$/, ''); if (c && !cands.includes(c)) cands.push(c); };
+    push(S.settings.gatewayUrl);
+    if (window.MEDI_CONFIG) push(window.MEDI_CONFIG.gatewayUrl);
+    push('http://localhost:8137');
+    push('http://127.0.0.1:8137');
+    const tryFetch = async (url, path, ms) => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), ms || 4000);
+      try { const r = await fetch(url + path, { signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+      finally { clearTimeout(t); }
+    };
+    S.autopilot = { tried: cands, found: null, result: null, log: [] };
+    let found = null;
+    for (const u of cands) {
+      try { await tryFetch(u, '/api/v1/health'); found = u; break; }
+      catch (e) { S.autopilot.log.push(`${u} — 실패(${e.name === 'AbortError' ? '응답 없음' : e.message})`); }
+    }
+    S.autopilot.found = found;
+    if (!found) return false;
+    if (found !== S.settings.gatewayUrl) {
+      S.autopilot.log.push(`게이트웨이 주소 자동 전환: ${S.settings.gatewayUrl} → ${found}`);
+      S.settings.gatewayUrl = found;
+      saveSettings();
+      S.source = null;
+    }
+    try { S.autopilot.result = await tryFetch(found, '/api/v1/autopilot', 30000); } catch (e) { /* 구버전 게이트웨이 */ }
+    return true;
   }
 
   // 계산 태그(수식) — 설정에 저장된 수식을 매 로드마다 가상 태그로 생성
@@ -275,7 +315,7 @@
         <span class="updated">${S.lastUpdate ? '갱신 ' + new Date(S.lastUpdate).toLocaleTimeString('ko-KR') : ''}</span>
         <button class="btn small" id="btn-refresh">↻ 새로고침</button>
       </div>
-      ${S.loadError ? `<div class="notice warn">⚠ 데이터 로드 오류: ${esc(S.loadError)} — 설정에서 데이터소스를 확인하세요.</div>` : ''}
+      ${S.loadError ? `<div class="notice warn">⚠ 데이터 로드 오류: ${esc(S.loadError)} — ${Object.keys(S.seriesMap || {}).length ? '마지막 정상 데이터를 유지한 채' : ''} 자동 재시도 중입니다. 계속되면 설정의 <strong>🚗 자동 연결</strong>을 실행하세요.</div>` : ''}
     `;
   }
   function wireTopbar() {
@@ -787,8 +827,16 @@
         : `<div class="notice ${qr.errors ? 'warn' : ''}">${qr.tagCount}개 중 <strong>${qr.issueTagCount}개 태그</strong>에서 이슈 — 오류 ${qr.errors} · 주의 ${qr.warns}</div>`;
       const rows = Object.entries(qr.perTag).slice(0, 40).map(([id, issues]) =>
         `<tr><td><code>${esc(id)}</code></td><td>${issues.map(i =>
-          `<div style="font-size:12px">${i.sev === 'error' ? '🟥' : '🟨'} ${esc(i.msg)}</div>`).join('')}</td></tr>`).join('');
+          `<div style="font-size:12px">${i.sev === 'error' ? '🟥' : '🟨'} ${esc(i.msg)}
+           ${i.fix && i.fix.factor ? `<button class="btn small" data-qfix="${esc(id)}" data-qfactor="${i.fix.factor}">🔧 ×${i.fix.factor} 보정 태그 자동 생성</button>` : ''}</div>`).join('')}</td></tr>`).join('');
       el.innerHTML = head + (rows ? `<div class="table-scroll" style="max-height:260px;overflow-y:auto"><table class="data"><thead><tr><th>태그</th><th>이슈</th></tr></thead><tbody>${rows}</tbody></table></div>` : '');
+      document.querySelectorAll('[data-qfix]').forEach(b => b.addEventListener('click', () => {
+        const id = b.dataset.qfix, f = b.dataset.qfactor;
+        if (!S.settings.calcTags) S.settings.calcTags = [];
+        S.settings.calcTags.push({ name: id + '-FIX', expr: `[${id}]*${f}` });
+        saveSettings();
+        refreshData();
+      }));
     })();
     // 계산 태그 목록/추가/삭제
     (function renderCalc() {
@@ -1735,6 +1783,7 @@
             <input type="text" id="set-gwurl" value="${esc(st.gatewayUrl)}" style="flex:1" placeholder="http://localhost:8137">
             <button class="btn small" id="set-gwtest">연결 테스트</button>
             <button class="btn small" id="set-gwdiag">🩺 연결 진단 마법사</button>
+            <button class="btn primary small" id="set-gwauto">🚗 자동 연결 (오토파일럿)</button>
           </div>
           <div class="faint">공장 PC에서 <code>backend/</code>의 게이트웨이를 실행하면 dataPARC(dataPARC.Store REST/OPC UA/PARCdata SQL)에서 태그 데이터를 가져옵니다. 설치법은 backend/README.md 참조.</div>
           <div id="set-gwout" class="faint" style="margin-top:6px"></div>
@@ -1841,6 +1890,52 @@
         out.innerHTML = `✅ 연결 성공 — 커넥터: <strong>${esc(j.connector || '?')}</strong>, 태그 ${j.tags ?? '?'}개`;
       } catch (e) {
         out.textContent = '❌ 연결 실패: ' + e.message + ' (게이트웨이 실행 여부/CORS/URL 확인)';
+      }
+    });
+    const gwAuto = $('#set-gwauto');
+    if (gwAuto) gwAuto.addEventListener('click', async () => {
+      const out = $('#set-gwout');
+      out.innerHTML = '<div class="faint">오토파일럿 실행 중 — 주소 탐색 → 경로 탐지 → 자동 보정…</div>';
+      const typed = $('#set-gwurl').value.trim();
+      if (typed) { S.settings.gatewayUrl = typed; }
+      const ok = await autoConnect();
+      const ap = S.autopilot || {};
+      const rows = [];
+      for (const l of ap.log || []) rows.push(`<div class="faint" style="font-size:12px">· ${esc(l)}</div>`);
+      if (!ok) {
+        rows.push('<div style="margin-top:6px">❌ 게이트웨이를 어느 주소에서도 찾지 못했습니다 — 게이트웨이 PC에서 실행 여부부터 확인하세요.</div>');
+        rows.push(`<div class="pattern-note" style="margin-top:6px"><strong>보낼 요청문 (복사해서 전달)</strong><br>
+          <textarea readonly style="width:100%;height:84px;font-size:11.5px">[게이트웨이 설치/기동 요청]\n수신: 담당자\n요청: 예지보전 게이트웨이(backend/) 를 dataPARC 접근 가능한 PC에서 기동 부탁드립니다.\n실행: pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8137\n방화벽: TCP 8137 인바운드 허용</textarea></div>`);
+        out.innerHTML = rows.join('');
+        return;
+      }
+      rows.push(`<div>✅ 게이트웨이 연결: <strong>${esc(ap.found)}</strong></div>`);
+      const r = ap.result;
+      if (r) {
+        for (const a of r.actions || []) {
+          rows.push(`<div style="font-size:12.5px">${a.ok ? (a.fixed ? '🔧' : '✅') : '❌'} <strong>${esc(a.what)}</strong> — ${esc(a.detail)}${a.fixed ? ' <span class="badge g-good">자동 조치</span>' : ''}</div>`);
+        }
+        if (r.applied_ts_offset_ms) rows.push(`<div>🔧 타임존 보정 적용 중: ${(r.applied_ts_offset_ms / 3600000).toFixed(1)}h</div>`);
+        if ((r.requests || []).length) {
+          rows.push('<div style="margin-top:8px"><strong>사람 조치 필요 — 아래 요청문을 복사해 전달하세요</strong></div>');
+          r.requests.forEach((q, i) => {
+            rows.push(`<div class="pattern-note" style="margin-top:4px"><strong>[${esc(q.who)}] ${esc(q.title)}</strong>
+              <button class="btn small" data-apcopy="${i}" style="float:right">복사</button>
+              <textarea readonly id="ap-req-${i}" style="width:100%;height:96px;font-size:11.5px;margin-top:4px">${esc(q.text)}</textarea></div>`);
+          });
+        } else {
+          rows.push('<div style="margin-top:6px">사람 조치 필요 항목 없음 — 데이터가 흐르고 있습니다.</div>');
+        }
+      }
+      await refreshData(); // 재분석 (render로 화면이 갱신됨)
+      const out2 = $('#set-gwout');
+      if (out2) {
+        out2.innerHTML = rows.join('');
+        document.querySelectorAll('[data-apcopy]').forEach(b => b.addEventListener('click', () => {
+          const ta = $('#ap-req-' + b.dataset.apcopy);
+          ta.select();
+          try { document.execCommand('copy'); b.textContent = '복사됨 ✓'; } catch (e) { /* noop */ }
+        }));
       }
     });
     const gwDiag = $('#set-gwdiag');

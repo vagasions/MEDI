@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,20 @@ def build_connector(cfg: dict):
 
 config = load_config()
 connector = build_connector(config)
+TS_OFFSET_MS = 0  # 오토파일럿이 검출한 타임존 보정 (read 응답에 적용)
+
+
+async def _read_raw_retry(ids, s, e, tries: int = 3):
+    """읽기 자동 재시도 (지수 백오프 1s/2s) — 일시 장애 자가 회복."""
+    last = None
+    for i in range(tries):
+        try:
+            return await connector.read_raw(ids, s, e)
+        except Exception as ex:  # noqa: BLE001
+            last = ex
+            if i < tries - 1:
+                await asyncio.sleep(2 ** i)
+    raise HTTPException(502, f"원본 읽기 실패(재시도 {tries}회): {type(last).__name__}: {last}")
 
 
 @asynccontextmanager
@@ -100,8 +115,12 @@ async def read_raw(
     s = _parse_dt(start) if start else e - timedelta(days=7)
     if s >= e:
         raise HTTPException(400, "start는 end보다 앞서야 합니다")
-    series = await connector.read_raw(ids, s, e)
-    return {"series": series}
+    series = await _read_raw_retry(ids, s, e)
+    if TS_OFFSET_MS:
+        for sdata in series.values():
+            if isinstance(sdata, dict) and sdata.get("t"):
+                sdata["t"] = [t + TS_OFFSET_MS for t in sdata["t"]]
+    return {"series": series, "tsOffsetMs": TS_OFFSET_MS}
 
 
 @app.get("/api/v1/read/current")
@@ -166,6 +185,30 @@ async def diag():
 
     ok_all = all(s["ok"] for s in steps)
     return {"ok": ok_all, "steps": steps, "gateway_time_utc": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/v1/autopilot")
+async def autopilot_run(host: str = Query(None, description="dataPARC 서버 호스트 (미지정 시 config에서 추론)")):
+    """자동 연결/트러블슈팅 — 포트 탐지, 경로 자동 선택, TLS/타임존 자동 보정, 요청문 생성."""
+    global TS_OFFSET_MS
+    from autopilot import run_autopilot
+    # 호스트 추론: 파라미터 > dataparc_rest.base_url > opcua.endpoint
+    h = host
+    if not h:
+        burl = (config.get("dataparc_rest") or {}).get("base_url", "")
+        if "//" in burl:
+            h = burl.split("//", 1)[1].split(":")[0].split("/")[0]
+    if not h:
+        ep = (config.get("opcua") or {}).get("endpoint", "")
+        if "//" in ep:
+            h = ep.split("//", 1)[1].split(":")[0]
+    result = await run_autopilot(h or "", connector, config)
+    off = result.get("ts_offset_ms", 0)
+    if off:
+        TS_OFFSET_MS = off
+    result["applied_ts_offset_ms"] = TS_OFFSET_MS
+    result["host"] = h or ""
+    return result
 
 
 if __name__ == "__main__":
