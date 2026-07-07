@@ -130,7 +130,7 @@ t('classifyTag — ISA-5.1 문자 해석', () => {
 t('defaultModel — 구조/조회', () => {
   const m = ontology.defaultModel();
   const assets = ontology.listAssets(m);
-  assert(assets.length === 12);
+  assert(assets.length === 13);
   const p = ontology.findAsset(m, 'P-101A');
   assert(p && p.class === 'CP' && p.tags.length === 8);
   assert(ontology.listTags(m).some(t => t.id === 'PDT-306'));
@@ -498,6 +498,73 @@ t('계전기 아날로그(THL 열용량): 트립 전에 과열을 선행 검출'
     `1위=${an.candidates[0] && an.candidates[0].mode.id}`);
   const h = health.computeHealth(an);
   assert(h.score < 70, `트립 전 경고 score ${h.score}`); // 트립이 오기 전에 잡는 것이 목적
+});
+
+console.log('== 밸브 진단 (논문 기반) ==');
+const valve = require(path.join(__dirname, '../js/analytics/valve.js'));
+t('ACF 진동 검출 — 합성 정현파 정확 검출, 잡음/추세 오탐 없음', () => {
+  const n = 300, dt = 5, pv = [];
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(11);
+  for (let i = 0; i < n; i++) pv.push(3 * Math.sin(2 * Math.PI * i * dt / 40) + (rng() - 0.5) * 0.4);
+  const o = valve.acfOscillation(pv, dt);
+  assert(o.oscillating && Math.abs(o.periodMin - 40) < 4, `T=${o.periodMin} r=${o.r}`);
+  assert(!valve.acfOscillation(Array.from({ length: 300 }, () => rng() * 2), dt).oscillating, '잡음 오탐');
+  assert(!valve.acfOscillation(Array.from({ length: 300 }, (_, i) => i * 0.05 + rng() * 0.5), dt).oscillating, '추세 오탐');
+});
+t('타원 적합 스틱션 정량화 — 합성 타원 폭 복원', () => {
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(13);
+  const op = [], pv = [];
+  for (let i = 0; i < 300; i++) {
+    const ph = 2 * Math.PI * i / 24;
+    op.push(4 * Math.sin(ph + 1.2) + (rng() - 0.5) * 0.3);
+    pv.push(3 * Math.sin(ph) + (rng() - 0.5) * 0.4);
+  }
+  const st = valve.stictionEllipse(op, pv);
+  assert(st && Math.abs(st.apparent - 8) < 1, `apparent=${st && st.apparent}`); // 진폭 4 → 폭 8
+});
+t('FV-101 스틱션 → 겉보기 스틱션 정량화 + 데드밴드 근사', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'fv101_stiction', startFrac: 0.55, endFrac: 1.2 },
+  ] });
+  const m = ontology.defaultModel();
+  const an = equip.analyzeAsset(ontology.findAsset(m, 'FV-101'), s.series, { recentHours: 24 });
+  assert(an.valve && an.valve.kind === 'CV', 'CV 밸브 진단 존재');
+  assert(an.valve.stiction && an.valve.stiction.apparent > 3 && an.valve.stiction.apparent < 12,
+    `apparent=${an.valve.stiction && an.valve.stiction.apparent}`); // 주입 데드밴드 ~5-7% 근사
+  // 정상 CV는 정량화 미표시 (게이트)
+  const s2 = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const an2 = equip.analyzeAsset(ontology.findAsset(m, 'FV-101'), s2.series, { recentHours: 24 });
+  assert(!an2.valve.stiction, '정상 루프 스틱션 미표시');
+});
+t('XV-701 스트로크 시간 증가 → OV-SLOW 1위', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'xv701_slow', startFrac: 0.45, endFrac: 1.1 },
+  ] });
+  const m = ontology.defaultModel();
+  const an = equip.analyzeAsset(ontology.findAsset(m, 'XV-701'), s.series, { recentHours: 24 });
+  assert(an.candidates[0] && an.candidates[0].mode.id === 'OV-SLOW' && an.candidates[0].score > 0.4,
+    `1위=${an.candidates[0] && an.candidates[0].mode.id}`);
+});
+t('XV-701 지령-리미트 불일치 → OV-FTF 1위 + 높은 우선순위 알람', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'xv701_ftc', startFrac: 0.75, endFrac: 0.95 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'XV-701');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.candidates[0] && an.candidates[0].mode.id === 'OV-FTF' && an.candidates[0].score > 0.6,
+    `1위=${an.candidates[0] && an.candidates[0].mode.id} ${an.candidates[0] && an.candidates[0].score}`);
+  const conds = health.conditionsFromAnalysis(a, an, health.computeHealth(an));
+  const fm = conds.find(c => c.key.includes('.fm.OV-FTF'));
+  assert(fm && fm.active && fm.priority === health.PRIORITY.HIGH, JSON.stringify(fm && fm.priority));
+});
+t('XV-701 정상 — 건강 양호·오탐 없음 (상태 접점을 알람으로 오인 안 함)', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  const an = equip.analyzeAsset(ontology.findAsset(m, 'XV-701'), s.series, { recentHours: 24 });
+  const h = health.computeHealth(an);
+  assert(h.score >= 85, `score ${h.score}`);
+  assert(an.valve.recentMismatchFrac < 0.02, 'mismatch 오탐');
 });
 
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);

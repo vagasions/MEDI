@@ -163,6 +163,23 @@ Exaopc/Exaquantum, **ABB Relion REF615/REM615·620(49M MPTTR 열용량 TEMP_RL �
 
 데모: `m401_trip`(과열→49→86 래치→정지·냉각, 권선온도 1차지연 모델), `m401_relay_chatter`.
 
+### 3.10-a 밸브 진단 — `js/analytics/valve.js` (논문 검증)
+
+| 함수 | 기법·출처 | 구현 노트 |
+|---|---|---|
+| `acfOscillation` | ACF 영교차 규칙성, r=(1/3)·mean(Tp)/std(Tp), r>1 규칙 진동 — Thornhill & Hägglund CEP 1997; Thornhill, Huang & Zhang JPC 2003 | 중심 이동평균 제거(밴드패스 상당) 후 ACF. 잡음/추세 오탐 없음 검증 |
+| `stictionEllipse` | PV-OP 타원 최소제곱 적합, OP축 폭 = 겉보기 스틱션 — Choudhury, Shah & Thornhill CEP 14(12) 2006 | 5×5 정규방정식, PV 스케일 정규화, 적합품질 fit<0.35 미표시. 게이트: 규칙 진동 or pos_gap 진동 증거(실공정 완화진동 대응) |
+| `travelStats` | 누적 이동량/반전 — 포지셔너(ValveLink) 표준 지표 | 데드밴드 0.05% 미만 무시, 일 단위 정규화 |
+| `cmdFbConsistency` | 지령-리미트 정합 — SIS PST 실무(IEC 61511; Lundteigen & Rausand JLPPI 2008) | 전환 샘플 1개 허용, 최근/전체 불일치율 → OV-FTF 증상 주입 |
+
+기타 검증 레퍼런스: Horch CEP 1999(교차상관 홀짝), He et al. IECR 2007(곡선적합), Jelali & Huang(Springer 2010,
+ISDB 93루프 벤치마크), Hägglund CEP 1995(IAE 감시). OV 클래스(XV-701): 스트로크 시간(KT)·공기압(PT) 아날로그
++ 지령/ZSO/ZSC 디지털 — OV-SLOW(DOP)·OV-AIR(LOO)·OV-FTF(FTF) 고장모드.
+
+**전기 심화**: run_status 상승에지 = 기동 카운트(C37.2 66 사상) — 기동 빈발 시 중간 알람.
+MCSA(전류 스펙트럼)는 kHz 샘플링 필요로 히스토리안 데이터로는 불가 — 계전기 열용량·불평형·기동횟수가
+저속 데이터에서 가능한 검증된 대안 (한계 명시).
+
 ### 3.10 진단 원리 쉬운 설명 (UI 내장)
 
 모든 진단 패널에 `explainBox()` 접이식 설명(❓ → 💡)을 내장 — 비유 중심(CUSUM=저금통,

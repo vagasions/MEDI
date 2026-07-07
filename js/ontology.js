@@ -47,6 +47,7 @@
     VF: { ko: '인버터(VFD)', en: 'Frequency converter', iso: 'FC' },
     TR: { ko: '변압기', en: 'Power transformer', iso: 'PT' },
     CV: { ko: '제어밸브', en: 'Control valve', iso: 'VA*' }, // 밸브 클래스 코드는 표준 원문 확인 필요
+    OV: { ko: '온오프/차단밸브', en: 'On-off / shutdown valve', iso: 'VA' },
     HE: { ko: '열교환기', en: 'Heat exchanger', iso: 'HE' },
     DC: { ko: '증류탑', en: 'Distillation column', iso: 'VE' },
     FH: { ko: '가열로', en: 'Fired heater', iso: 'HB' },
@@ -512,6 +513,42 @@
         leadTime: '수주.',
       },
     ],
+    OV: [
+      {
+        id: 'OV-SLOW', name: '스트로크 시간 증가 (작동 지연)', iso14224: 'DOP (Delayed operation)',
+        mechanism: '액추에이터 씰 마모·스프링 열화, 공기 배관/솔레노이드 유량 제한, 스템 마찰 증가 — 차단밸브가 "느려지는" 것은 완전 고착의 전 단계. SIS 부분행정시험(PST)이 잡는 대표 열화',
+        symptoms: [
+          { role: 'stroke_time', pattern: 'up', w: 4 },
+          { role: 'stroke_time', pattern: 'high', w: 2 },
+          { role: 'air_supply', pattern: 'down', w: 1 },
+        ],
+        causes: ['액추에이터 씰/스프링 열화', '급기 필터·레귤레이터 막힘', '솔레노이드 배기 제한', '스템/패킹 마찰 증가'],
+        actions: ['PST(부분행정시험) 결과와 대조', '필터레귤레이터·급기 배관 점검', '솔레노이드 배기포트 점검', '정지 기회에 풀스트로크 시험'],
+        leadTime: '수주~수개월 완만 진행 — 추세 감시로 계획 정비 가능. 방치 시 요구 시 작동 실패(SIS PFD 상승).',
+      },
+      {
+        id: 'OV-AIR', name: '구동 공기 공급 저하', iso14224: 'LOO (Low output)',
+        mechanism: '계장공기 헤더 압력 저하, 필터레귤레이터 막힘, 배관 누설 — 같은 헤더의 여러 밸브가 동시에 느려지면 공기계통이 원인',
+        symptoms: [
+          { role: 'air_supply', pattern: 'down', w: 3 },
+          { role: 'air_supply', pattern: 'low', w: 2 },
+          { role: 'stroke_time', pattern: 'up', w: 1 },
+        ],
+        causes: ['계장공기 압축기/드라이어 문제', '필터레귤레이터 막힘', '급기 배관 누설'],
+        actions: ['공기 헤더 압력 확인 (다른 밸브와 비교)', '필터레귤레이터 차압 점검', '누설음 점검'],
+        leadTime: '수일~수주. 공기 상실 시 페일 포지션으로 이동 — 공정 영향 사전 검토.',
+      },
+      {
+        id: 'OV-FTF', name: '작동 불능/지령-리미트 불일치', iso14224: 'FTF (Fail to function)',
+        mechanism: '지령(XV)을 냈는데 리미트(ZSO/ZSC)가 따라오지 않음 — 고착, 솔레노이드 불량, 리미트스위치 고장 중 하나. ESD 밸브면 안전기능 상실',
+        symptoms: [
+          { role: 'cmd_mismatch', pattern: 'up', w: 5 },
+        ],
+        causes: ['밸브 고착(장기 미작동)', '솔레노이드 코일/배선 불량', '리미트스위치 고장/설정 틀어짐', '액추에이터 손상'],
+        actions: ['**즉시 현장 확인** — 실제 밸브 위치와 리미트 비교', '리미트스위치 단독 고장이면 계기 교체', '고착이면 정지 기회에 분해점검', 'ESD 밸브면 SIS 팀 통보(안전기능 가용성)'],
+        leadTime: '즉시 대응 — 요구 시 작동 실패는 비계획 정지·안전사고로 직결.',
+      },
+    ],
     VE: [],
   };
 
@@ -618,6 +655,15 @@
         { measure: 'Aux Relay / 알람유닛', models: 'ISA 18.1 어나운시에이터', diag: 'first-out 시퀀스(무엇이 먼저 떴는지) 표준. 접점 채터링(반복 단속)은 결선 이완·접점 마모·코일전압 marginal의 대표 증상 (Omron 릴레이 FAQ) [검증]' },
       ],
     },
+    valvePos: {
+      name: '밸브 포지셔너/진단 (Emerson·Valmet·SAMSON)',
+      items: [
+        { measure: '제어밸브 진단', models: 'Fisher FIELDVUE DVC6200 + ValveLink', diag: '온라인 Performance Diagnostics: 마찰·이동 편차·급기압 이상, 오프라인 밸브 시그니처/스텝 시험. 본 시스템의 스틱션 정량화와 교차 확인 [검증]' },
+        { measure: 'SIS 차단밸브 PST', models: 'Fisher DVC6200 SIS · Neles ValvGuard VG9000', diag: '부분행정시험(PST) — 정지 없이 고착 검출, 스트로크 시간/브레이크아웃 추세가 판정 기준 (IEC 61511 실무, 시험커버리지 ~60-70%) [검증]' },
+        { measure: '지능형 포지셔너', models: 'Valmet Neles ND9000', diag: '온라인 밸브 시그니처 — 부하율(Load Factor: 스트로크에 쓰인 액추에이터 힘 %) 상승 추세 = 마찰 증가, 한계 알람 설정 가능 [검증]' },
+        { measure: '포지셔너 내장 진단', models: 'SAMSON EXPERTplus (3730 시리즈) · TROVIS SAFE (SIL)', diag: '포지셔너 내장 밸브 진단 + SIS용 PST/FST [검증]' },
+      ],
+    },
     common: {
       name: '공통 표준',
       items: [
@@ -630,7 +676,7 @@
   // tags[].role 은 FAILURE_LIB의 symptom role과 매칭된다.
   function defaultModel() {
     return {
-      version: 4,
+      version: 5,
       site: { id: 'YC-PC', name: '여천 석유화학단지 (데모)', standard: 'ISA-95 / ISO 14224' },
       areas: [
         {
@@ -676,6 +722,18 @@
                     { id: 'FT-431', role: 'flow_pv', desc: '유량 (PV)', unit: 'm³/h', lo: 60, hi: 160 },
                     { id: 'ZT-432', role: 'valve_position', desc: '밸브 개도', unit: '%', lo: 5, hi: 95 },
                     { id: 'FY-433', role: 'controller_output', desc: '제어기 출력 (OP)', unit: '%', lo: 5, hi: 95 },
+                  ],
+                },
+                {
+                  id: 'XV-701', name: 'XV-701 나프타 이송 차단밸브 (ESD 겸용)',
+                  class: 'OV', criticality: 'A',
+                  design: { size: '8"', failAction: 'FC', actuator: '공압 스프링리턴' },
+                  tags: [
+                    { id: 'XS-711', role: 'valve_cmd', desc: '열림 지령 (DCS/SIS 출력)', unit: '', kind: 'digital' },
+                    { id: 'XS-712', role: 'open_fb', desc: '열림 리미트 (ZSO)', unit: '', kind: 'digital' },
+                    { id: 'XS-713', role: 'closed_fb', desc: '닫힘 리미트 (ZSC)', unit: '', kind: 'digital' },
+                    { id: 'KT-714', role: 'stroke_time', desc: '스트로크 시간 (DCS 연산)', unit: 's', lo: 0, hi: 25 },
+                    { id: 'PT-715', role: 'air_supply', desc: '구동 공기압', unit: 'kg/cm²', lo: 4.5, hi: 8 },
                   ],
                 },
               ],
@@ -797,7 +855,7 @@
                     { id: 'ST-406', role: 'speed', desc: '회전수', unit: 'rpm', lo: 900, hi: 1800 },
                     { id: 'XS-407', role: 'run_status', desc: '운전 상태 (Aux Relay 접점)', unit: '', kind: 'digital' },
                     { id: 'XA-408', role: 'protection_trip', desc: '보호계전기 트립 (86 록아웃)', unit: '', kind: 'digital', trip: true },
-                    { id: 'XA-409', role: 'thermal_alarm', desc: '열동 알람 접점 (49)', unit: '', kind: 'digital' },
+                    { id: 'XA-409', role: 'thermal_alarm', desc: '열동 알람 접점 (49)', unit: '', kind: 'digital', alarm: true },
                     { id: 'THL-410', role: 'thermal_capacity', desc: '열용량 사용률 (보호계전기 49 Thermal Level)', unit: '%', lo: 0, hi: 100 },
                   ],
                 },
@@ -938,7 +996,7 @@
         const raw = localStorage.getItem(LS_KEY);
         if (raw) {
           const m = JSON.parse(raw);
-          if (m && m.version === 4) return m;
+          if (m && m.version === 5) return m;
         }
       }
     } catch (e) { /* 손상 시 기본 모델로 */ }

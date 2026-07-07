@@ -29,7 +29,7 @@
     if (tripEntry) {
       parts.push({ name: `보호계전기 트립 (${tripEntry[0]})`, penalty: 70, detail: '86 록아웃 래치 — 원인 규명·리셋 전 재기동 금지' });
       for (const [tagId, d] of digitals) {
-        if (!d.trip && d.state === 1) parts.push({ name: `알람 접점 활성 (${tagId})`, penalty: 5, detail: d.desc });
+        if (!d.trip && d.alarmContact && d.state === 1) parts.push({ name: `알람 접점 활성 (${tagId})`, penalty: 5, detail: d.desc });
       }
       const score = clamp(Math.round(100 - parts.reduce((a, p) => a + p.penalty, 0)), 0, 100);
       return { score, grade: 'alarm', parts };
@@ -37,7 +37,7 @@
 
     // 0b) 알람 접점(49 열동 등) 활성 / 접점 채터링
     for (const [tagId, d] of digitals) {
-      if (!d.trip && d.state === 1 && d.role !== 'run_status') {
+      if (!d.trip && d.alarmContact && d.state === 1) {
         parts.push({ name: `알람 접점 활성 (${tagId})`, penalty: 18, detail: `${d.desc} — 최근 ${(d.activeFrac * 100).toFixed(0)}% 시간 활성` });
       }
       if (d.chatter > 0.3) {
@@ -257,7 +257,7 @@
           message: `${asset.name}: 보호계전기 트립 (${tagId} ${d.desc}) — 86 록아웃 래치. 원인 규명·리셋 전 재기동 금지`,
           evidence: { type: 'digital', kind: 'trip', tagId, lastChange: d.lastChange },
         });
-      } else if (d.role !== 'run_status') {
+      } else if (d.alarmContact) {
         conds.push({
           key: `${aid}.dig.alarm.${tagId}`,
           active: d.state === 1,
@@ -275,6 +275,18 @@
         message: `${asset.name}: ${tagId} 접점 채터링 — 시간당 ${d.ratePerHour.toFixed(1)}회 상태변화 (베이스라인 ${d.baseRatePerHour.toFixed(1)}회). 결선 이완/접점 마모/코일 전압 점검`,
         evidence: { type: 'digital', kind: 'chatter', tagId, ratePerHour: d.ratePerHour },
       });
+      // 기동 빈발 (C37.2 66 사상) — 잦은 기동은 권선 열피로 가속
+      if (d.role === 'run_status') {
+        const freq = d.startsRecent > Math.max(8, d.startsBasePerDay * 3) && d.chatter <= 0.3;
+        conds.push({
+          key: `${aid}.dig.starts.${tagId}`,
+          active: freq && !tripActive,
+          priority: PRIORITY.MED,
+          asset: aid,
+          message: `${asset.name}: 기동 빈발 — 최근 24h ${d.startsRecent}회 기동 (평시 ${d.startsBasePerDay.toFixed(1)}회/일). 잦은 기동은 권선 열피로 가속(66 사상) — 운전 방식 확인`,
+          evidence: { type: 'digital', kind: 'frequent_starts', tagId, starts: d.startsRecent },
+        });
+      }
     }
 
     // 5) 계기(트랜스미터) 이상 — 공정 알람과 별도 채널 (정비 계기팀 대상)

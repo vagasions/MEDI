@@ -404,6 +404,21 @@
         <div class="grid cols-2" id="adv-charts"></div>
       </div>
 
+      <div class="panel" id="valve-panel" style="display:none">
+        <h2>밸브 진단 — 논문 검증 기법</h2>
+        <div class="pattern-note">
+          제어밸브: ACF 진동 검출(Thornhill 2003) + PV-OP 타원 적합 스틱션 정량화(Choudhury 2006) + 이동량/반전 카운트(포지셔너 진단 지표).
+          온오프/차단밸브: 스트로크 시간 추세 + 지령-리미트 정합 — SIS 부분행정시험(PST, IEC 61511 실무)의 히스토리안 근사.
+        </div>
+        ${explainBox('밸브 진단, 쉽게 말하면?', [
+          ['진동 검출 (ACF)', '신호의 "자기 자신과의 닮음"이 일정한 간격으로 반복되면 진동입니다. 간격이 고를수록(r>1) 밸브 문제, 들쑥날쑥하면 외란일 가능성. 저희 임계는 Thornhill 논문 그대로.'],
+          ['스틱션 정량화 (타원)', '제어기 출력(OP)과 유량(PV)을 가로세로로 그리면, 스틱션 루프는 <b>타원</b>을 그립니다. 타원의 가로 폭이 "겉보기 스틱션(%)" — 밸브가 움직이기 전에 OP가 헛도는 양입니다. 3% 넘으면 정비 대상으로 보는 것이 통례.'],
+          ['이동량/반전', '개도의 하루 누적 이동량과 방향 반전 횟수. 갑자기 늘면 루프 헌팅(패킹 수명 단축), 0에 가까우면 밸브가 안 움직이는 것.'],
+          ['스트로크 시간', '차단밸브가 열리고 닫히는 데 걸리는 시간. 느려지는 추세 = 액추에이터/공기계통 열화 — 완전 고착 전에 잡는 것이 PST의 목적.'],
+        ])}
+        <div id="valve-facts" style="margin-bottom:10px"></div>
+      </div>
+
       <div class="panel" id="dig-panel" style="display:none">
         <h2>전기/디지털 신호 — 트립 · 알람 접점 · 상태</h2>
         <div class="pattern-note">
@@ -545,6 +560,25 @@
         <div class="faint" style="margin-top:4px">${esc(c.mode.leadTime)}</div>
       `;
       fmEl.appendChild(div);
+    }
+
+    // 밸브 진단 패널 (CV/OV)
+    if (an.valve) {
+      $('#valve-panel').style.display = '';
+      const v = an.valve;
+      const chips = [];
+      if (v.kind === 'CV') {
+        chips.push(`<span class="tag-chip ${v.osc.oscillating ? 'on' : ''}" style="cursor:default">진동 ${v.osc.oscillating ? `규칙적 (주기 ${v.osc.periodMin.toFixed(0)}분)` : v.osc.periodMin ? `불규칙 (주기 추정 ${v.osc.periodMin.toFixed(0)}분, r=${v.osc.r.toFixed(2)})` : '미검출'}</span>`);
+        if (v.stiction) chips.push(`<span class="tag-chip on" style="cursor:default;color:var(--warn);border-color:var(--warn)">겉보기 스틱션 ${v.stiction.apparent.toFixed(1)}% (타원적합 ${(v.stiction.fit * 100).toFixed(0)}%) — 3% 초과 시 정비 검토</span>`);
+        if (v.travel) chips.push(`<span class="tag-chip ${v.travel.travelRatio > 2 ? 'on' : ''}" style="cursor:default">이동량 ${v.travel.recent.travelPerDay.toFixed(0)}%/일 (평시 ${v.travel.base.travelPerDay.toFixed(0)}) · 반전 ${v.travel.recent.reversalsPerDay.toFixed(1)}회/일</span>`);
+      } else if (v.kind === 'OV') {
+        chips.push(`<span class="tag-chip" style="cursor:default">최근 24h 작동 ${v.recentOps}회 (누적 ${v.ops}회)</span>`);
+        chips.push(`<span class="tag-chip ${v.recentMismatchFrac > 0.05 ? 'on' : ''}" style="cursor:default;${v.recentMismatchFrac > 0.05 ? 'color:var(--alarm);border-color:var(--alarm)' : ''}">지령-리미트 불일치 ${(v.recentMismatchFrac * 100).toFixed(1)}%${v.recentMismatchFrac > 0.05 ? ' — 현장 확인 필요' : ''}</span>`);
+        const stTag = (a.tags || []).find(t => t.role === 'stroke_time');
+        const st = stTag && an.tagDiag[stTag.id];
+        if (st) chips.push(`<span class="tag-chip ${st.zShift > 2 ? 'on' : ''}" style="cursor:default">스트로크 시간 ${st.lastValue.toFixed(1)}s (평시 ${st.baseMean.toFixed(1)}s${st.zShift > 2 ? `, +${st.zShift.toFixed(1)}σ 증가 추세` : ''})</span>`);
+      }
+      $('#valve-facts').innerHTML = chips.join(' ');
     }
 
     // 전기/디지털 신호 카드

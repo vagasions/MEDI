@@ -5,12 +5,12 @@
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./stats.js'), require('./multivariate.js'), require('../ontology.js'), require('./advanced.js'));
+    module.exports = factory(require('./stats.js'), require('./multivariate.js'), require('../ontology.js'), require('./advanced.js'), require('./valve.js'));
   } else {
     root.MEDI = root.MEDI || {};
-    root.MEDI.equip = factory(root.MEDI.stats, root.MEDI.mv, root.MEDI.ontology, root.MEDI.adv);
+    root.MEDI.equip = factory(root.MEDI.stats, root.MEDI.mv, root.MEDI.ontology, root.MEDI.adv, root.MEDI.valve);
   }
-})(typeof self !== 'undefined' ? self : this, function (stats, mv, ontology, adv) {
+})(typeof self !== 'undefined' ? self : this, function (stats, mv, ontology, adv, valve) {
   'use strict';
 
   const clamp01 = x => Math.max(0, Math.min(1, x));
@@ -330,6 +330,48 @@
       }
     }
 
+    // 2.5) 밸브 전용 진단 — CV: 진동/스틱션 정량화/이동량, OV: 지령-리미트 정합
+    //     (OV의 cmd_mismatch는 관측 증상으로 주입 → 고장모드 매칭에 사용)
+    let valveDiag = null;
+    if (valve && asset.class === 'CV') {
+      const pvCol = roleCol.flow_pv !== undefined ? aligned.cols[roleCol.flow_pv] : null;
+      const opCol = roleCol.controller_output !== undefined ? aligned.cols[roleCol.controller_output] : null;
+      const ztCol = roleCol.valve_position !== undefined ? aligned.cols[roleCol.valve_position] : null;
+      const dtMin = (aligned.dt || 300000) / 60000;
+      if (pvCol) {
+        const recPv = pvCol.slice(recentIdx[0], recentIdx[1]);
+        const osc = valve.acfOscillation(recPv, dtMin);
+        // 타원 정량화 게이트: 규칙 진동(Thornhill r>1) 또는 강한 pos_gap 진동 증거.
+        // 실공정 스틱션은 완화진동형(불규칙)이 흔해 r<1이어도 사이클 증거가 있으면 정량화.
+        const pg = observed.pos_gap || {};
+        const cyclic = osc.oscillating || Math.max(pg.variance || 0, pg.spike || 0) > 0.5;
+        let stiction = null;
+        if (cyclic && opCol) {
+          stiction = valve.stictionEllipse(opCol.slice(recentIdx[0], recentIdx[1]), recPv);
+          if (stiction && stiction.fit < 0.35) stiction = null; // 적합 불량 시 미표시
+        }
+        const travel = ztCol ? valve.travelStats(ztCol, aligned.t, baseIdx, recentIdx) : null;
+        valveDiag = {
+          kind: 'CV',
+          osc: { oscillating: osc.oscillating, periodMin: osc.periodMin, r: osc.r },
+          stiction, travel,
+        };
+      }
+    } else if (valve && asset.class === 'OV') {
+      const byRole = r => (asset.tags || []).find(t => t.role === r);
+      const cmdT = byRole('valve_cmd'), opT = byRole('open_fb'), clT = byRole('closed_fb');
+      if (cmdT && opT && seriesMap[cmdT.id] && seriesMap[opT.id]) {
+        const con = valve.cmdFbConsistency(seriesMap[cmdT.id], seriesMap[opT.id], clT && seriesMap[clT.id], o.recentHours * 3600000);
+        if (con) {
+          valveDiag = Object.assign({ kind: 'OV' }, con);
+          observed.cmd_mismatch = {
+            up: clamp01((con.recentMismatchFrac - 0.02) / 0.2),
+            down: 0, variance: 0, spike: 0, high: 0, low: 0,
+          };
+        }
+      }
+    }
+
     // 3) 고장모드 후보 매칭
     const candidates = ontology.matchFailureModes(asset.class, observed);
 
@@ -381,7 +423,8 @@
       assetId: asset.id, ok: true,
       aligned: { t: aligned.t, n, baseIdx, recentIdx },
       tagDiag, derived, derivedDiag, observed,
-      candidates, instruments, digital, tripped, mv: mvResult, adv: advResult,
+      candidates, instruments, digital, tripped, valve: valveDiag,
+      mv: mvResult, adv: advResult,
     };
   }
 
@@ -400,19 +443,22 @@
       const baseEndMs = s.t[0] + (s.t[n - 1] - s.t[0]) * 0.4;
       const b = s.v.map(x => (x >= 0.5 ? 1 : 0));
       let recEdges = 0, baseEdges = 0, lastChange = null, recOn = 0, recN = 0;
+      let recStarts = 0, baseStarts = 0; // 상승 에지(0→1) = 기동/발생 횟수 (66 사상)
       const baseHours = Math.max((baseEndMs - s.t[0]) / 3600000, 0.5);
       for (let i = 1; i < n; i++) {
         const edge = b[i] !== b[i - 1];
+        const rising = b[i] === 1 && b[i - 1] === 0;
         if (edge) lastChange = s.t[i];
-        if (s.t[i] >= recStartMs) { if (edge) recEdges++; recOn += b[i]; recN++; }
-        else if (edge && s.t[i] <= baseEndMs) baseEdges++;
+        if (s.t[i] >= recStartMs) { if (edge) recEdges++; if (rising) recStarts++; recOn += b[i]; recN++; }
+        else if (s.t[i] <= baseEndMs) { if (edge) baseEdges++; if (rising) baseStarts++; }
       }
       const recRate = recEdges / Math.max(recentHours, 0.5);
       const baseRate = baseEdges / baseHours;
       out[t.id] = {
-        role: t.role, desc: t.desc, trip: !!t.trip,
+        role: t.role, desc: t.desc, trip: !!t.trip, alarmContact: !!t.alarm,
         state: b[n - 1], activeFrac: recN ? recOn / recN : 0,
         edgesRecent: recEdges, ratePerHour: recRate, baseRatePerHour: baseRate,
+        startsRecent: recStarts, startsBasePerDay: baseStarts * 24 / baseHours,
         // 채터링 강도: 최근 에지율이 베이스라인의 3배 이상이며 시간당 1회를 넘을 때부터
         chatter: clamp01((recRate - Math.max(3 * baseRate, 1)) / 5),
         lastChange,

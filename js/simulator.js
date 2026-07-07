@@ -92,6 +92,16 @@
       desc: '운전상태 접점이 간헐 반복 단락 — 결선 이완/접점 마모/코일 전압 marginal 시그니처',
       frac: { startFrac: 0.5, endFrac: 0.9 },
     },
+    xv701_slow: {
+      id: 'xv701_slow', name: 'XV-701 스트로크 시간 증가 (차단밸브)', asset: 'XV-701',
+      desc: '액추에이터/공기계통 열화로 개폐가 느려짐 — PST가 잡는 대표 열화의 히스토리안 버전',
+      frac: { startFrac: 0.45, endFrac: 1.1 },
+    },
+    xv701_ftc: {
+      id: 'xv701_ftc', name: 'XV-701 작동 불능 (지령-리미트 불일치)', asset: 'XV-701',
+      desc: '열림 지령에 리미트가 따라오지 않음 — 고착/솔레노이드/리미트스위치. ESD면 안전기능 상실',
+      frac: { startFrac: 0.75, endFrac: 0.95 },
+    },
   };
 
   // 기본 데모: 3개 시나리오가 이미 진행 중
@@ -163,8 +173,9 @@
     }
 
     // FV-101 제어루프 상태 (스틱션 시뮬레이션 — 적분형 제어기 + 고착-미끄럼 밸브)
-    let fvOp = 62, fvZt = 62, fvPv = 110;
+    let fvOp = 62, fvZt = 62, fvPv = 110, fvPvF = 110;
     let m401Trip = 0, m401W = null, m401Th = 55; // 86 록아웃 래치 + 권선온도·열용량 상태
+    let xvCmd = 1, xvStroke = 8, xvStuck = 0;    // XV-701 지령/스트로크시간/고착 상태
 
     for (let i = 0; i < n; i++) {
       const L = plantLoad(i);      // 0.78~0.98
@@ -258,9 +269,10 @@
       {
         const stc = activeScn('fv101_stiction');
         const pStc = stc ? progress(stc, i) : 0;
-        const sp = 110 * L;
-        // 적분형 제어기 (스틱션 없으면 안정 수렴)
-        fvOp += 0.10 * (sp - fvPv);
+        const sp = 110 * (0.7 + 0.3 * L); // 유량 SP는 부하에 완충되어 추종 (실공장 운전 방식)
+        // 적분형 제어기 — 실제 DCS처럼 필터된 PV 사용 (잡음 적분으로 인한 사이클 불규칙 방지)
+        fvPvF += 0.5 * (fvPv - fvPvF);
+        fvOp += 0.16 * (sp - fvPvF);
         fvOp = Math.max(8, Math.min(92, fvOp));
         // 고착-미끄럼: |OP-개도| > 데드밴드일 때만 미끄럼 점프 (Choudhury 2-파라미터 간이형)
         const dead = 0.4 + 6.5 * pStc;
@@ -354,6 +366,25 @@
         const thTarget = m401Trip ? 4 : Math.min(105, 72 * Math.pow(mI / 105, 2) + 34 * pTrip);
         m401Th += 0.15 * (thTarget - m401Th);
         put('THL-410', i, Math.max(0, Math.min(100, m401Th + gauss() * 0.5)));
+      }
+
+      // ===== XV-701 온오프/차단밸브 (3시간 주기 개폐, 스트로크 시간은 작동 시 DCS 연산값) =====
+      {
+        const slow = activeScn('xv701_slow');
+        const pSlow = slow ? progress(slow, i) : 0;
+        const ftc = activeScn('xv701_ftc');
+        const pFtc = ftc ? progress(ftc, i) : 0;
+        if (i > 0 && i % 36 === 0) { // 개폐 작동
+          xvCmd = 1 - xvCmd;
+          xvStroke = (8 + 11 * pSlow) * (1 + gauss() * 0.05); // 열화 시 8→19s
+          xvStuck = pFtc > 0.5 && xvCmd === 1 && rand() < 0.85 ? 1 : 0; // 열림 지령에 불응(고착)
+        }
+        const open = xvCmd === 1 && !xvStuck ? 1 : 0;
+        put('XS-711', i, xvCmd);
+        put('XS-712', i, open);
+        put('XS-713', i, open ? 0 : 1);
+        put('KT-714', i, Math.max(2, xvStroke));
+        put('PT-715', i, 6.3 - 0.7 * pSlow + gauss() * 0.06);
       }
 
       // ===== CT-601 냉각탑 =====
