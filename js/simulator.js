@@ -161,11 +161,12 @@
     // 저주파 운전점 변화 (생산부하 78~98%) + 일변화
     const loadPhase = rand() * 6.28, loadPhase2 = rand() * 6.28;
     function plantLoad(i) {
-      const f = i / (n - 1);
+      // 절대 시간 주기(60h/29h) — 히스토리 길이와 무관해야 백테스트 캘리브레이션이
+      // 운전 영역(부하 사이클)을 항상 커버한다
       const hrs = (t0 + i * stepMs) / 3600000;
       return 0.88
-        + 0.06 * Math.sin(2 * Math.PI * f * 1.7 + loadPhase)
-        + 0.04 * Math.sin(2 * Math.PI * f * 4.3 + loadPhase2);
+        + 0.06 * Math.sin(2 * Math.PI * hrs / 60 + loadPhase)
+        + 0.04 * Math.sin(2 * Math.PI * hrs / 29 + loadPhase2);
     }
     function ambient(i) { // 주간/야간 냉각수 온도 영향
       const hrs = (t0 + i * stepMs) / 3600000;

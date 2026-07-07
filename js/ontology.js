@@ -397,9 +397,13 @@
       },
       {
         id: 'DC-FOUL', name: '내부 오염 (트레이/충전물)', iso14224: 'PLU',
-        mechanism: '중합물·염·부식생성물 침적 → 동일 부하에서 dP 완만 상승, 저부하에서도 조기 플러딩',
+        mechanism: '중합물·염·부식생성물 침적 → 동일 부하에서 dP 완만 상승, 저부하에서도 조기 플러딩. 완만·매끈한 상승이 특징 (dP 변동성 동반 상승은 플러딩)',
         symptoms: [
           { role: 'dp_norm', pattern: 'up', w: 3 },
+        ],
+        absent: [
+          { role: 'dp_top', pattern: 'variance', w: 3 },
+          { role: 'dp_top', pattern: 'spike', w: 2 },
         ],
         causes: ['중합성 성분', '부식 생성물', '염 석출'],
         actions: ['부하 정규화 dP 추이 확인', '세정 계획 수립', '운전 여유 재평가'],
@@ -908,6 +912,98 @@
     };
   }
 
+  // ---------- 파생지표 → 입력 신호 매핑 (equipment.js derivedSeries와 동기) ----------
+  // 신호 추천에 사용: 고장모드 증상이 파생지표(role)를 참조하면 그 계산에 필요한 실제 태그 role로 풀어낸다.
+  const DERIVED_INPUTS = {
+    'HE.u_proxy': ['hot_in', 'hot_out', 'cold_in', 'cold_out', 'hot_flow'],
+    'HE.approach': ['hot_out', 'cold_in'],
+    'CP.eff_proxy': ['flow', 'discharge_pressure', 'suction_pressure', 'motor_current'],
+    'CO.surge_margin': ['suction_flow'],
+    'CO.temp_ratio': ['suction_pressure', 'discharge_pressure', 'discharge_temp'],
+    'RC.adiabatic_resid': ['suction_pressure', 'discharge_pressure', 'suction_temp', 'discharge_temp'],
+    'VF.hs_residual': ['heatsink_temp', 'output_current'],
+    'VF.if_residual': ['output_current', 'output_freq'],
+    'EM.wt_residual': ['winding_temp', 'motor_current'],
+    'TR.cool_residual': ['top_oil_temp', 'ambient_temp', 'load_current'],
+    'TR.oil_level_c': ['oil_level', 'top_oil_temp'],
+    'CV.loop_osc': ['flow_pv'],
+    'CV.pos_gap': ['controller_output', 'valve_position'],
+    'CV.flow_op_resid': ['flow_pv', 'controller_output'],
+    'DC.dp_norm': ['dp_top', 'dp_bottom', 'feed_flow'],
+    'DC.profile_dt': ['tray_temp', 'top_temp'],
+    'FH.tmt_cot_gap': ['tmt', 'cot'],
+    'CT.approach': ['cold_water', 'ambient_temp'],
+    'CT.range': ['hot_water', 'cold_water'],
+    'CT.effectiveness': ['hot_water', 'cold_water', 'ambient_temp'],
+    'OV.cmd_mismatch': ['valve_cmd', 'open_fb', 'closed_fb'],
+  };
+
+  // ---------- 신호 추천 (진단에 필요한 데이터 목록) ----------
+  // "이 설비를 진단하려면 어떤 신호를 주세요"를 고장모드 라이브러리에서 자동 도출.
+  // 반환: [{role, ko, example, unit, kind, required, why: [고장모드명...]}] 필수 우선 정렬
+  function signalRequirements(cls, model) {
+    const m = model || defaultModel();
+    // 데모 모델에서 role의 표기/예시 태그를 수집
+    const roleInfo = {};
+    for (const a of listAssets(m)) {
+      if (a.class !== cls) continue;
+      for (const t of a.tags || []) {
+        if (!roleInfo[t.role]) roleInfo[t.role] = { ko: t.desc, example: t.id, unit: t.unit || '', kind: t.kind || 'analog' };
+      }
+    }
+    // 고장모드 증상 → (파생지표는 입력 신호로 확장) → role별 가중치·근거 수집
+    const acc = {}; // role → {w, fms:Set, via:Set}
+    const add = (role, w, fmName, via) => {
+      if (!acc[role]) acc[role] = { w: 0, fms: new Set(), via: new Set() };
+      acc[role].w += w;
+      acc[role].fms.add(fmName);
+      if (via) acc[role].via.add(via);
+    };
+    for (const fm of FAILURE_LIB[cls] || []) {
+      for (const s of fm.symptoms || []) {
+        const inputs = DERIVED_INPUTS[`${cls}.${s.role}`];
+        if (inputs) inputs.forEach(r => add(r, s.w, fm.name, s.role));
+        else add(s.role, s.w, fm.name, null);
+      }
+    }
+    const out = Object.entries(acc).map(([role, a]) => ({
+      role,
+      ko: (roleInfo[role] && roleInfo[role].ko) || role,
+      example: (roleInfo[role] && roleInfo[role].example) || '',
+      unit: (roleInfo[role] && roleInfo[role].unit) || '',
+      kind: (roleInfo[role] && roleInfo[role].kind) || 'analog',
+      required: a.w >= 3 || a.fms.size >= 2,
+      weight: a.w,
+      why: [...a.fms],
+      viaDerived: [...a.via],
+    }));
+    out.sort((x, y) => (y.required - x.required) || (y.weight - x.weight));
+    return out;
+  }
+
+  // ---------- 사용자 정의 조합 자산 (dataPARC 태그 조합) ----------
+  function ensureUserArea(model) {
+    let area = (model.areas || []).find(a => a.id === 'A-USER');
+    if (!area) {
+      area = { id: 'A-USER', name: '사용자 정의 (태그 조합)', units: [{ id: 'U-USER', name: '사용자 조합', assets: [] }] };
+      model.areas.push(area);
+    }
+    if (!area.units || !area.units.length) area.units = [{ id: 'U-USER', name: '사용자 조합', assets: [] }];
+    return area.units[0];
+  }
+  function addCustomAsset(model, asset) {
+    const unit = ensureUserArea(model);
+    const i = unit.assets.findIndex(a => a.id === asset.id);
+    if (i >= 0) unit.assets[i] = asset; else unit.assets.push(asset);
+    return asset;
+  }
+  function removeCustomAsset(model, assetId) {
+    const unit = ensureUserArea(model);
+    const i = unit.assets.findIndex(a => a.id === assetId);
+    if (i >= 0) unit.assets.splice(i, 1);
+    return i >= 0;
+  }
+
   // ---------- 모델 탐색 유틸 ----------
   function listAssets(model) {
     const out = [];
@@ -1043,7 +1139,8 @@
   return {
     ISA51_FIRST, classifyTag,
     EQUIP_CLASSES, FAILURE_LIB, failureModesFor, matchFailureModes,
-    INSTRUMENT_LIB, VENDOR_REFS,
+    INSTRUMENT_LIB, VENDOR_REFS, DERIVED_INPUTS,
+    signalRequirements, addCustomAsset, removeCustomAsset,
     defaultModel, listAssets, findAsset, listTags, tagsByRole,
     load, save, reset, toLLMContext,
   };

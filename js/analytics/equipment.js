@@ -287,7 +287,17 @@
       return { assetId: asset.id, ok: false, reason: '데이터 부족 (정렬 후 30점 미만)' };
     }
     const n = aligned.t.length;
-    const baseEnd = Math.max(20, Math.floor(n * o.baseFrac));
+    // 베이스라인: 기본은 앞 40%(롤링), baselineHours 지정 시 고정 캘리브레이션 구간
+    // (백테스트 등에서 "정상이었던 기간"을 고정해 학습-평가 분리를 보장)
+    let baseEnd;
+    if (o.baselineHours) {
+      const cutMs = aligned.t[0] + o.baselineHours * 3600000;
+      baseEnd = aligned.t.findIndex(t => t > cutMs);
+      if (baseEnd < 0) baseEnd = n;
+      baseEnd = Math.max(20, Math.min(baseEnd, n - 5));
+    } else {
+      baseEnd = Math.max(20, Math.floor(n * o.baseFrac));
+    }
     const recentSpanMs = o.recentHours * 3600000;
     let recentStart = n - 1;
     while (recentStart > 0 && aligned.t[n - 1] - aligned.t[recentStart - 1] <= recentSpanMs) recentStart--;
@@ -413,7 +423,7 @@
 
     // 5) 최신 검증 기법 (advanced.js) — 검출기별 결과 + 온셋/RUL
     let advResult = null;
-    if (adv && baseEnd >= 60) {
+    if (adv && baseEnd >= 60 && !o.skipAdv) {
       try {
         advResult = advancedAnalysis(asset, aligned, tagDiag, baseIdx, recentIdx);
       } catch (e) { advResult = null; }

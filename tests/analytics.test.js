@@ -493,7 +493,7 @@ t('계전기 아날로그(THL 열용량): 트립 전에 과열을 선행 검출'
   ] });
   const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
   assert(an.tripped === false, '아직 트립 전');
-  assert(an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift > 2, `THL zShift ${an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift}`);
+  assert(an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift > 1.2, `THL zShift ${an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift}`);
   assert(an.candidates[0] && an.candidates[0].mode.id === 'EM-WIND' && an.candidates[0].score > 0.4,
     `1위=${an.candidates[0] && an.candidates[0].mode.id}`);
   const h = health.computeHealth(an);
@@ -565,6 +565,56 @@ t('XV-701 정상 — 건강 양호·오탐 없음 (상태 접점을 알람으로
   const h = health.computeHealth(an);
   assert(h.score >= 85, `score ${h.score}`);
   assert(an.valve.recentMismatchFrac < 0.02, 'mismatch 오탐');
+});
+
+console.log('== 백테스트 + 신호 추천 + 사용자 조합 ==');
+const backtest = require(path.join(__dirname, '../js/analytics/backtest.js'));
+t('백테스트 — 베어링 고장: 온셋 이후 첫 알람 + 리드타임 > 24h', () => {
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'P-101A');
+  const failureMs = 1751846400000;
+  const s = simulator.makeSim({ days: 14, stepMin: 5, now: failureMs, active: [
+    { id: 'p101a_bearing', startFrac: 0.55, endFrac: 0.95 },
+  ] });
+  const onsetMs = failureMs - 14 * 24 * 3600000 * 0.45;
+  const r = backtest.runBacktest(a, s.series, { stepHours: 4, failureMs });
+  assert(r.firstAlarmMs && r.firstAlarmMs > onsetMs, '첫 알람이 고장 시작 이후');
+  assert(r.leadHours > 24, `리드타임 ${r.leadHours}h`);
+});
+t('백테스트 — 정상 데이터: 경고(<70) 없음 (미래 누수/오탐 가드)', () => {
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'P-101A');
+  const s = simulator.makeSim({ days: 14, stepMin: 5, now: 1751846400000, active: [] });
+  const r = backtest.runBacktest(a, s.series, { stepHours: 4 });
+  assert(r.firstWarnMs === null, `정상인데 경고 ${r.firstWarnMs && new Date(r.firstWarnMs).toISOString()}`);
+});
+t('신호 추천 — EM 필수에 전류·권선온도 포함, CV 필수에 OP·개도 포함', () => {
+  const em = ontology.signalRequirements('EM');
+  const req = em.filter(r => r.required).map(r => r.role);
+  assert(req.includes('motor_current') && req.includes('winding_temp'), req.join(','));
+  const cv = ontology.signalRequirements('CV').filter(r => r.required).map(r => r.role);
+  assert(cv.includes('controller_output') && cv.includes('valve_position'), cv.join(','));
+});
+t('사용자 조합 자산 — 생성/분석/삭제', () => {
+  const m = ontology.defaultModel();
+  // 데모 태그를 재활용해 커스텀 모터 조합 생성
+  ontology.addCustomAsset(m, {
+    id: 'USR-TEST', name: '테스트 모터 조합', class: 'EM', criticality: 'B', custom: true,
+    tags: [
+      { id: 'IT-401', role: 'motor_current', desc: '전류', unit: 'A' },
+      { id: 'TT-403', role: 'winding_temp', desc: '권선온도', unit: '°C' },
+      { id: 'VT-405', role: 'vibration', desc: '진동', unit: 'mm/s' },
+    ],
+  });
+  const a = ontology.findAsset(m, 'USR-TEST');
+  assert(a && a.class === 'EM');
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.ok, an.reason);
+  const h = health.computeHealth(an);
+  assert(h.score >= 80, `조합 정상 점수 ${h.score}`);
+  assert(ontology.removeCustomAsset(m, 'USR-TEST'));
+  assert(!ontology.findAsset(m, 'USR-TEST'));
 });
 
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);

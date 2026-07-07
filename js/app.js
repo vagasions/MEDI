@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv } = window.MEDI;
+  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv, backtest } = window.MEDI;
 
   // ---------- 상태 ----------
   const LS_SETTINGS = 'medi.settings.v1';
@@ -30,9 +30,13 @@
       mode: 'demo',
       gatewayUrl: 'http://localhost:8137',
       recentHours: 24,
+      histDays: 7,
       scenarios: simulator.DEFAULT_ACTIVE.map(a => a.id),
       autoRefresh: true,
+      notify: false,
     };
+    // 사내망 배포용 공통 하드코딩(config.js의 window.MEDI_CONFIG) — 저장된 개인 설정이 우선
+    if (typeof window !== 'undefined' && window.MEDI_CONFIG) Object.assign(def, window.MEDI_CONFIG);
     try {
       const raw = localStorage.getItem(LS_SETTINGS);
       if (raw) return Object.assign(def, JSON.parse(raw));
@@ -98,7 +102,7 @@
   async function initSource() {
     const st = S.settings;
     if (st.mode === 'gateway') {
-      S.source = datasource.createGatewaySource(st.gatewayUrl, { hours: Math.max(st.recentHours * 4, 72) });
+      S.source = datasource.createGatewaySource(st.gatewayUrl, { hours: Math.max((st.histDays || 7) * 24, st.recentHours * 4, 72) });
     } else if (st.mode === 'csv' && S.csvSeries) {
       S.source = datasource.createCsvSource(S.csvSeries, S.csvLabel);
     } else {
@@ -107,7 +111,7 @@
         const sc = simulator.SCENARIOS[id];
         return d || (sc && sc.frac ? Object.assign({ id }, sc.frac) : { id, startFrac: 0.5, endFrac: 1.4 });
       });
-      S.source = datasource.createDemoSource({ active });
+      S.source = datasource.createDemoSource({ active, days: st.histDays || 7 });
     }
     await S.source.init();
   }
@@ -146,7 +150,16 @@
     }
     const firstRun = S.alarmEngine.events.length === 0 && Object.keys(S.alarmEngine.states).length === 0;
     const rounds = firstRun ? 2 : 1;
-    for (let i = 0; i < rounds; i++) S.alarmEngine.evaluate(conds, now);
+    let raisedAll = [];
+    for (let i = 0; i < rounds; i++) { const r = S.alarmEngine.evaluate(conds, now); raisedAll = raisedAll.concat(r.raised); }
+    // 브라우저 알림 (설정에서 옵트인, 첫 로드는 제외 — 긴급/높음만)
+    if (!firstRun && S.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      for (const ev of raisedAll) {
+        if (ev.priority === health.PRIORITY.URGENT || ev.priority === health.PRIORITY.HIGH) {
+          try { new Notification('MEDI PdM — ' + ev.priority, { body: ev.message, tag: ev.id }); } catch (e) { /* noop */ }
+        }
+      }
+    }
   }
 
   function scheduleAutoRefresh() {
@@ -167,6 +180,8 @@
     { id: 'asset', ico: '⚙️', name: '설비 상세' },
     { id: 'alarms', ico: '🔔', name: '알람 / 이벤트' },
     { group: '분석' },
+    { id: 'dataprep', ico: '🧩', name: '데이터 준비 / 조합' },
+    { id: 'backtest', ico: '⏮️', name: '백테스트' },
     { id: 'trends', ico: '📈', name: '트렌드 분석' },
     { id: 'patterns', ico: '🎓', name: '분석 실습 (5패턴)' },
     { id: 'report', ico: '📋', name: '진단 리포트' },
@@ -214,6 +229,8 @@
     switch (S.view) {
       case 'dashboard': viewDashboard(main); break;
       case 'asset': viewAsset(main); break;
+      case 'dataprep': viewDataPrep(main); break;
+      case 'backtest': viewBacktest(main); break;
       case 'trends': viewTrends(main); break;
       case 'patterns': viewPatterns(main); break;
       case 'alarms': viewAlarms(main); break;
@@ -636,6 +653,246 @@
 
   function gradeColor(g) {
     return { good: 'var(--good)', watch: 'var(--watch)', warn: 'var(--warn)', alarm: 'var(--alarm)' }[g] || 'var(--text-dim)';
+  }
+
+  // ---------- 뷰: 데이터 준비 / 태그 조합 ----------
+  // dataPARC(또는 CSV/데모)에서 온 태그를 검색·선택하고, 설비 클래스별 "필요 신호 추천"에
+  // 매핑해 사용자 정의 진단 조합을 만든다.
+  function viewDataPrep(main) {
+    if (!S.dp) S.dp = { q: '', sel: [], cls: 'EM', map: {} };
+    const dp = S.dp;
+    const known = {}; // tagId → 온톨로지 정보
+    for (const t of ontology.listTags(S.model)) known[t.id] = t;
+    const allIds = Object.keys(S.seriesMap).sort();
+    const q = dp.q.trim().toUpperCase();
+    const filtered = q ? allIds.filter(id => id.toUpperCase().includes(q)) : allIds;
+    const shown = filtered.slice(0, 300);
+    const reqs = ontology.signalRequirements(dp.cls, S.model);
+    const userAssets = ontology.listAssets(S.model).filter(a => a.areaId === 'A-USER');
+
+    main.innerHTML = `
+      ${topbar('데이터 준비 — 태그 검색 · 조합 · 필요 신호 추천')}
+      <div class="notice">
+        ① 히스토리안에서 온 태그를 검색해 선택 → ② 설비 종류를 고르면 <strong>진단에 필요한 신호를 추천</strong> →
+        ③ 태그를 역할에 매핑해 "내 조합"을 만들면 대시보드/백테스트에서 다른 설비와 똑같이 진단됩니다.
+      </div>
+      ${explainBox('왜 신호 추천이 필요한가요?', [
+        ['조합이 진단력을 결정', '전동기 과열은 전류·권선온도·열용량이 있어야 감별되고, 베어링은 진동·베어링온도가 필요합니다. 태그를 모으기 전에 "무엇이 필요한지"부터 아는 것이 순서.'],
+        ['필수 vs 권장', '필수 = 이 신호가 없으면 주요 고장모드를 감별 못 함(여러 고장모드가 참조). 권장 = 있으면 감별력·조기성이 좋아짐.'],
+        ['근거', '각 신호가 어떤 고장모드 검출에 쓰이는지 함께 표시합니다 — 계기 신설/수집 요청의 근거 자료로 쓰세요.'],
+      ])}
+      <div class="grid cols-2">
+        <div class="panel">
+          <h2>① 태그 브라우저 <span class="faint">(${allIds.length}개 로드됨${filtered.length !== allIds.length ? ' · ' + filtered.length + '개 일치' : ''})</span></h2>
+          <div class="form-row"><input type="text" id="dp-q" placeholder="태그 검색 (예: PT, 401, VT-)" value="${esc(dp.q)}" style="flex:1"></div>
+          <div class="table-scroll" style="max-height:420px;overflow-y:auto"><table class="data">
+            <thead><tr><th></th><th>태그</th><th>분류(ISA-5.1)</th><th>소속</th></tr></thead>
+            <tbody>
+              ${shown.map(id => {
+                const c = ontology.classifyTag(id);
+                const k = known[id];
+                return `<tr><td><input type="checkbox" data-dpsel="${esc(id)}" ${dp.sel.includes(id) ? 'checked' : ''}></td>
+                  <td><code>${esc(id)}</code></td><td>${esc(c.ko)}</td>
+                  <td class="faint">${k ? esc(k.assetName) : '<span class="faint">미등록</span>'}</td></tr>`;
+              }).join('')}
+              ${filtered.length > 300 ? `<tr><td colspan="4" class="faint">…외 ${filtered.length - 300}개 — 검색으로 좁히세요</td></tr>` : ''}
+            </tbody>
+          </table></div>
+          <div style="margin-top:8px">선택됨: ${dp.sel.length ? dp.sel.map(id => `<span class="tag-chip on" data-dpdel="${esc(id)}" title="클릭하여 제거">${esc(id)} ✕</span>`).join(' ') : '<span class="faint">없음</span>'}</div>
+        </div>
+        <div class="panel">
+          <h2>② 필요 신호 추천 + 역할 매핑</h2>
+          <div class="form-row">
+            <label>설비 종류</label>
+            <select id="dp-cls">${Object.entries(ontology.EQUIP_CLASSES).map(([k, v]) => `<option value="${k}" ${k === dp.cls ? 'selected' : ''}>${esc(v.ko)} (${k})</option>`).join('')}</select>
+          </div>
+          <div class="table-scroll"><table class="data">
+            <thead><tr><th>신호</th><th>구분</th><th>이 신호로 잡는 고장</th><th>매핑할 태그</th></tr></thead>
+            <tbody>
+              ${reqs.map(r => `<tr>
+                <td><strong>${esc(r.ko)}</strong><div class="faint" style="font-size:11px">${esc(r.role)}${r.example ? ' · 예: ' + esc(r.example) : ''}${r.kind === 'digital' ? ' · 접점' : ''}</div></td>
+                <td>${r.required ? '<span class="badge g-warn">필수</span>' : '<span class="badge g-good">권장</span>'}</td>
+                <td style="font-size:11.5px">${r.why.map(esc).join(', ')}</td>
+                <td><select data-dprole="${esc(r.role)}" style="max-width:140px">
+                  <option value="">(없음)</option>
+                  ${dp.sel.map(id => `<option value="${esc(id)}" ${dp.map[r.role] === id ? 'selected' : ''}>${esc(id)}</option>`).join('')}
+                </select></td>
+              </tr>`).join('')}
+            </tbody>
+          </table></div>
+          <div id="dp-gap" style="margin-top:8px"></div>
+          <div class="form-row" style="margin-top:10px">
+            <label>조합 이름</label>
+            <input type="text" id="dp-name" placeholder="예: 3호기 급수펌프 모터" style="flex:1">
+            <button class="btn primary" id="dp-create">조합 만들기</button>
+          </div>
+          ${userAssets.length ? `<div style="margin-top:12px"><h3>내 조합</h3>${userAssets.map(a => `
+            <div class="form-row"><span>⚙️ ${esc(a.name)} <span class="faint">(${esc((ontology.EQUIP_CLASSES[a.class] || {}).ko || a.class)}, 태그 ${a.tags.length}개)</span></span>
+            <button class="btn small" data-dpgo="${esc(a.id)}">진단 보기</button>
+            <button class="btn small" data-dprm="${esc(a.id)}">삭제</button></div>`).join('')}</div>` : ''}
+        </div>
+      </div>
+    `;
+    wireTopbar();
+    $('#dp-q').addEventListener('input', e => { dp.q = e.target.value; render(); $('#dp-q').focus(); const v = $('#dp-q'); v.setSelectionRange(v.value.length, v.value.length); });
+    document.querySelectorAll('[data-dpsel]').forEach(c => c.addEventListener('change', () => {
+      const id = c.dataset.dpsel;
+      if (c.checked) { if (!dp.sel.includes(id)) dp.sel.push(id); autoMap(id); }
+      else dp.sel = dp.sel.filter(x => x !== id);
+      render();
+    }));
+    document.querySelectorAll('[data-dpdel]').forEach(c => c.addEventListener('click', () => { dp.sel = dp.sel.filter(x => x !== c.dataset.dpdel); render(); }));
+    $('#dp-cls').addEventListener('change', e => { dp.cls = e.target.value; dp.map = {}; dp.sel.forEach(autoMap); render(); });
+    document.querySelectorAll('[data-dprole]').forEach(s => s.addEventListener('change', () => { if (s.value) dp.map[s.dataset.dprole] = s.value; else delete dp.map[s.dataset.dprole]; render(); }));
+    document.querySelectorAll('[data-dpgo]').forEach(b => b.addEventListener('click', () => go('asset', b.dataset.dpgo)));
+    document.querySelectorAll('[data-dprm]').forEach(b => b.addEventListener('click', () => {
+      ontology.removeCustomAsset(S.model, b.dataset.dprm);
+      ontology.save(S.model);
+      analyzeAll();
+      render();
+    }));
+
+    // 선택 태그를 ISA-5.1 분류로 빈 역할에 자동 매핑
+    function autoMap(tagId) {
+      const meas = ontology.classifyTag(tagId).measure;
+      for (const r of reqs) {
+        if (dp.map[r.role]) continue;
+        const exMeas = r.example ? ontology.classifyTag(r.example).measure : null;
+        if (exMeas && exMeas === meas && !Object.values(dp.map).includes(tagId)) { dp.map[r.role] = tagId; return; }
+      }
+    }
+
+    // 누락 필수 신호 안내
+    const missing = reqs.filter(r => r.required && !dp.map[r.role]);
+    $('#dp-gap').innerHTML = missing.length
+      ? `<div class="notice warn">⚠ 필수 신호 미매핑: ${missing.map(r => `<strong>${esc(r.ko)}</strong>`).join(', ')} — 없으면 관련 고장모드(${esc(missing.flatMap(r => r.why).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3).join(', '))})의 감별력이 낮아집니다. 해당 계측 수집을 요청하세요.</div>`
+      : '<div class="notice">✓ 필수 신호가 모두 매핑되었습니다.</div>';
+
+    $('#dp-create').addEventListener('click', () => {
+      const name = $('#dp-name').value.trim();
+      const mapped = Object.entries(dp.map);
+      if (!name) { alert('조합 이름을 입력하세요.'); return; }
+      if (mapped.length < 2) { alert('최소 2개 신호를 매핑하세요.'); return; }
+      const id = 'USR-' + name.replace(/[^A-Za-z0-9가-힣]/g, '').slice(0, 12);
+      const roleInfo = {};
+      for (const r of reqs) roleInfo[r.role] = r;
+      ontology.addCustomAsset(S.model, {
+        id, name, class: dp.cls, criticality: 'B', custom: true,
+        tags: mapped.map(([role, tagId]) => {
+          const ri = roleInfo[role] || {};
+          return { id: tagId, role, desc: ri.ko || role, unit: ri.unit || '', kind: ri.kind === 'digital' ? 'digital' : undefined };
+        }),
+      });
+      ontology.save(S.model);
+      analyzeAll();
+      go('asset', id);
+    });
+  }
+
+  // ---------- 뷰: 백테스트 ----------
+  // 과거 데이터를 시간순 재생 — "실제 고장 몇 시간 전에 경고가 떴을까" (미래 데이터 누수 없음)
+  function viewBacktest(main) {
+    if (!S.bt) S.bt = { asset: null, stepHours: 4, failStr: '', light: true, result: null, running: false };
+    const bt = S.bt;
+    const assets = ontology.listAssets(S.model);
+    if (!bt.asset && assets.length) bt.asset = assets[0].id;
+
+    main.innerHTML = `
+      ${topbar('백테스트 — 비계획 정지, 미리 잡을 수 있었나')}
+      <div class="notice">
+        과거 데이터를 시간 순으로 재생하며 각 시점에서 <strong>그때까지의 데이터만으로</strong> 진단을 실행합니다(미래 누수 없음).
+        실제 고장/트립 시각을 입력하면 <strong>리드타임</strong>(첫 경고 → 실제 고장까지 여유)을 계산합니다.
+        실제 발생 데이터가 있으면 설정에서 CSV로 올린 뒤 여기서 검증하세요.
+      </div>
+      ${explainBox('백테스트 결과를 읽는 법', [
+        ['리드타임', '첫 알람부터 실제 고장까지의 시간. 이 여유가 정비 준비(자재·인력·계획정지 협의)에 충분했는지가 도입 가치의 근거입니다.'],
+        ['미래 누수 없음', '각 평가 시점에서 그 이후 데이터는 전혀 사용하지 않습니다 — "그때 알 수 있었던 것"만으로 판단.'],
+        ['캘리브레이션 구간', '기록 앞부분(기본 40%, 최대 7일)을 정상 기준으로 학습합니다. 이 구간에 이미 고장이 진행 중이면 기준이 오염되니, 정상이었던 기간이 포함되게 데이터를 준비하세요.'],
+        ['경고가 안 떴다면', '이 신호 조합으로는 그 고장의 전조가 안 보였다는 뜻 — "데이터 준비" 메뉴의 필수 신호 추천을 참고해 계측을 보강하세요.'],
+      ])}
+      <div class="panel">
+        <div class="form-row">
+          <label>설비/조합</label>
+          <select id="bt-asset">${assets.map(a => `<option value="${a.id}" ${a.id === bt.asset ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+          <label>평가 간격</label>
+          <select id="bt-step">${[1, 2, 4, 8].map(h => `<option value="${h}" ${h === bt.stepHours ? 'selected' : ''}>${h}시간</option>`).join('')}</select>
+          <label>실제 고장 시각(선택)</label>
+          <input type="datetime-local" id="bt-fail" value="${esc(bt.failStr)}">
+          <label class="chk"><input type="checkbox" id="bt-light" ${bt.light ? 'checked' : ''}> 빠른 모드(고급기법 생략)</label>
+          <button class="btn primary" id="bt-run" ${bt.running ? 'disabled' : ''}>${bt.running ? '계산 중…' : '백테스트 실행'}</button>
+        </div>
+      </div>
+      <div id="bt-out"></div>
+    `;
+    wireTopbar();
+    $('#bt-asset').addEventListener('change', e => { bt.asset = e.target.value; });
+    $('#bt-step').addEventListener('change', e => { bt.stepHours = +e.target.value; });
+    $('#bt-fail').addEventListener('change', e => { bt.failStr = e.target.value; });
+    $('#bt-light').addEventListener('change', e => { bt.light = e.target.checked; });
+    $('#bt-run').addEventListener('click', () => {
+      bt.running = true;
+      render();
+      setTimeout(() => {
+        try {
+          const asset = ontology.findAsset(S.model, bt.asset);
+          const failureMs = bt.failStr ? new Date(bt.failStr).getTime() : null;
+          bt.result = backtest.runBacktest(asset, S.seriesMap, {
+            stepHours: bt.stepHours, light: bt.light, failureMs: failureMs && isFinite(failureMs) ? failureMs : null,
+          });
+          bt.result.failureMs = failureMs && isFinite(failureMs) ? failureMs : null;
+        } catch (e) { bt.result = { error: e.message }; }
+        bt.running = false;
+        render();
+      }, 30);
+    });
+
+    if (bt.result) renderBacktestResult($('#bt-out'), bt.result);
+  }
+
+  function renderBacktestResult(el, r) {
+    if (r.error) { el.innerHTML = `<div class="notice warn">오류: ${esc(r.error)}</div>`; return; }
+    if (!r.points || !r.points.length) { el.innerHTML = `<div class="notice warn">${esc(r.reason || '결과 없음')}</div>`; return; }
+    const fmtT = ms => new Date(ms).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    let verdict;
+    if (r.failureMs && r.leadHours !== null) {
+      const d = r.leadHours;
+      verdict = d >= 24
+        ? `<div class="notice">✅ 실제 고장 <strong>${d >= 48 ? (d / 24).toFixed(1) + '일' : d.toFixed(0) + '시간'} 전</strong>에 첫 경고 — 계획 정비로 비계획 정지를 막을 수 있었던 사례입니다.</div>`
+        : d > 0
+          ? `<div class="notice warn">⚠ 첫 경고가 고장 ${d.toFixed(0)}시간 전 — 여유가 짧습니다. 더 민감한 신호(추천 참조) 보강 검토.</div>`
+          : `<div class="notice warn">✗ 고장 전 경고 없음 — 이 신호 조합으로는 전조가 보이지 않았습니다. "데이터 준비"의 필수 신호 추천을 참고하세요.</div>`;
+    } else {
+      verdict = r.firstAlarmMs
+        ? `<div class="notice">첫 알람: ${fmtT(r.firstAlarmMs)} (실제 고장 시각을 입력하면 리드타임을 계산합니다)</div>`
+        : '<div class="notice">기간 내 알람 없음.</div>';
+    }
+    el.innerHTML = `
+      ${verdict}
+      <div class="panel">
+        <h2>건강지수 타임라인 <span class="faint">(${r.evalCount}회 평가)</span></h2>
+        <div class="chart-box"><canvas id="bt-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>백테스트 알람 (${r.alarms.length}건)</h2>
+        <div class="table-scroll"><table class="data">
+          <thead><tr><th>시각</th><th>우선순위</th><th>내용</th></tr></thead>
+          <tbody>${r.alarms.map(a => `<tr><td style="white-space:nowrap">${fmtT(a.t)}</td><td>${esc(a.priority)}</td><td style="font-size:12px">${esc(a.message)}</td></tr>`).join('') || '<tr><td colspan="3" class="faint">없음</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    `;
+    const pts = r.points.filter(p => p.score !== null);
+    const vlines = [];
+    if (r.firstAlarmMs) vlines.push({ t: r.firstAlarmMs, label: '첫 알람', color: 'rgba(255,183,77,0.9)' });
+    if (r.failureMs) vlines.push({ t: r.failureMs, label: '실제 고장', color: 'rgba(239,83,80,0.95)' });
+    charts.lineChart($('#bt-chart'), {
+      height: 240,
+      series: [{ name: '건강지수', t: pts.map(p => p.t), v: pts.map(p => p.score), color: '#4fc3f7' }],
+      thresholds: [
+        { y: 70, label: '관찰', color: '#ffca28' },
+        { y: 50, label: '경고', color: '#ef5350' },
+      ],
+      vlines,
+    });
   }
 
   // ---------- 뷰: 트렌드 ----------
@@ -1416,6 +1673,9 @@
         <div class="form-row" style="margin-top:12px">
           <label>최근 감시구간(시간)</label>
           <input type="number" id="set-recent" value="${st.recentHours}" min="1" max="168" style="width:90px">
+          <label>과거 데이터 기간(일)</label>
+          <input type="number" id="set-histdays" value="${st.histDays || 7}" min="2" max="60" style="width:80px" title="데모/게이트웨이에서 불러올 히스토리 길이 — 백테스트는 길수록 좋음">
+          <label class="chk" title="긴급/높음 알람 발생 시 브라우저 알림 (탭이 열려 있는 동안)"><input type="checkbox" id="set-notify" ${st.notify ? 'checked' : ''}> 브라우저 알림</label>
           <button class="btn primary" id="set-apply">적용 후 재분석</button>
         </div>
       </div>
@@ -1454,6 +1714,12 @@
     }));
     $('#set-apply').addEventListener('click', async () => {
       st.recentHours = Math.max(1, parseInt($('#set-recent').value, 10) || 24);
+      st.histDays = Math.max(2, Math.min(60, parseInt($('#set-histdays').value, 10) || 7));
+      const wantNotify = $('#set-notify').checked;
+      if (wantNotify && !st.notify && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      st.notify = wantNotify;
       st.gatewayUrl = ($('#set-gwurl') ? $('#set-gwurl').value.trim() : st.gatewayUrl) || st.gatewayUrl;
       saveSettings();
       S.source = null;
