@@ -68,6 +68,21 @@
       lines.push('');
     }
 
+    // 2b) 계기 건전성
+    const inss = analysis.instruments || [];
+    if (inss.length) {
+      lines.push('## 2b. 계기 건전성 (트랜스미터 점검 필요)');
+      for (const ins of inss) {
+        const lib = (ontology.INSTRUMENT_LIB || {})[ins.type] || {};
+        lines.push(`### ${ins.tagId} — ${lib.name || ins.type} (NE 107: ${lib.ne107 || '-'})`);
+        lines.push(`- 근거: ${ins.evidence}`);
+        if (lib.actions) lines.push(`- 확인 순서: ${lib.actions.join(' → ')}`);
+        if (lib.vendorRefs && lib.vendorRefs.length) lines.push(`- 벤더 진단 교차확인: ${lib.vendorRefs[0]}`);
+      }
+      lines.push('- ⚠ 계기 이상 태그가 있으면 아래 다변량/고장모드 결과 해석에 주의 (계기 원인 배제 먼저).');
+      lines.push('');
+    }
+
     // 3) 다변량 분석
     lines.push('## 3. 다변량 분석 (복합 신호)');
     if (analysis.mv) {

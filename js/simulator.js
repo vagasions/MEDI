@@ -72,6 +72,16 @@
       id: 'c202_valve', name: 'C-202 왕복동압축기 밸브 누설', asset: 'C-202',
       desc: '단열 잔차·토출온도 상승 + 토출량 감소 (왕복동 정지원인 1위)',
     },
+    pt202_plug: {
+      id: 'pt202_plug', name: 'PT-202 임펄스라인 막힘 (계기)', asset: 'C-201',
+      desc: '토출압력 트랜스미터 도압배관 막힘 — 노이즈(σ) 붕괴, 평균 유지 (SPM/ILBD/PILD 시그니처)',
+      frac: { startFrac: 0.45, endFrac: 0.8 }, // 최근 구간에서 막힘 완성
+    },
+    tt113_stuck: {
+      id: 'tt113_stuck', name: 'TT-113 출력 고착 (계기)', asset: 'P-101B',
+      desc: '베어링 온도 트랜스미터 출력 고착 — flatline, 노이즈 완전 소실',
+      frac: { startFrac: 0.45, endFrac: 0.8 },
+    },
   };
 
   // 기본 데모: 3개 시나리오가 이미 진행 중
@@ -344,6 +354,29 @@
         const pack = 64 + 10 * (L - 0.88) * 2 + gauss() * 0.7;
         put('PT-471', i, Ps); put('PT-472', i, Pd); put('TT-473', i, Ts);
         put('TT-474', i, Td); put('FT-475', i, cap); put('TT-476', i, pack);
+      }
+    }
+
+    // ---------- 계기 고장 시나리오 (신호 후처리) ----------
+    // 임펄스라인 막힘: 저역통과 혼합 → 노이즈 붕괴·평균 유지 / 출력 고착: 값 유지(flatline)
+    const INSTR_FAULTS = { pt202_plug: { tag: 'PT-202', kind: 'plug' }, tt113_stuck: { tag: 'TT-113', kind: 'stuck' } };
+    for (const [sid, f] of Object.entries(INSTR_FAULTS)) {
+      const scn = activeScn(sid);
+      const s = scn && series[f.tag];
+      if (!s) continue;
+      if (f.kind === 'plug') {
+        let sm = s.v[0];
+        for (let i = 0; i < n; i++) {
+          sm += 0.08 * (s.v[i] - sm);
+          const p = progress(scn, i);
+          if (p > 0) s.v[i] = Math.round((s.v[i] * (1 - p) + sm * p) * 1000) / 1000;
+        }
+      } else if (f.kind === 'stuck') {
+        let hold = null;
+        for (let i = 0; i < n; i++) {
+          if (hold === null && progress(scn, i) >= 0.5) hold = s.v[i];
+          if (hold !== null) s.v[i] = hold;
+        }
       }
     }
 

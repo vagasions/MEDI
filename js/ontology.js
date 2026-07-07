@@ -512,6 +512,85 @@
     VE: [],
   };
 
+  // ---------- 계기(트랜스미터) 고장모드 라이브러리 ----------
+  // 신호 시그니처는 벤더 자가진단 기능과 동일 원리 — 히스토리안 측에서 근사 검출.
+  // NE107: NAMUR NE 107 표준 상태분류 (F=Failure, C=Function Check, S=Out of Spec, M=Maintenance Required)
+  const INSTRUMENT_LIB = {
+    impulse_plug: {
+      name: '임펄스라인 막힘/동결 의심', ne107: 'M (Maintenance Required)',
+      mechanism: '도압배관 막힘(슬러리·왁스·수화물) 또는 히트트레이싱 고장에 의한 동결 — 계기가 공정에서 "분리"되어 공정 노이즈(σ)가 급감하고 평균은 유지되다가, 완전 막힘 시 값이 고착됨',
+      appliesTo: '압력(PT)·차압(PDT)·유량(FT, DP식)·레벨(LT, DP식)',
+      actions: ['현장에서 임펄스라인 블로우다운/퍼지', '히트트레이싱(동절기) 통전 확인', 'HART 진단(막힘 검출 기능) 교차 확인', '3-밸브 매니폴드 조작 이력 확인'],
+      vendorRefs: [
+        'Emerson Rosemount 3051S Advanced HART Diagnostics(옵션 DA2) — SPM(통계공정감시): 노이즈 σ 감소로 막힘 검출 [공식 기술노트 검증]',
+        'Yokogawa EJX 시리즈(옵션 /DG6) — ILBD(임펄스라인 막힘 검출): DPharp 멀티센싱 압력요동 분석, 고압측/저압측/양측 막힘 구분 + 플랜지 온도로 히트트레이스 감시 [공식 문서 검증]',
+        'ABB 266(2600T) 시리즈 — PILD(막힘 임펄스라인 검출), HART/PA/FF 표준 탑재 [공식 매뉴얼 검증]',
+      ],
+    },
+    stuck: {
+      name: '출력 고착(stuck/frozen) 의심', ne107: 'F (Failure)',
+      mechanism: '센서/전자부 고장, 완전 막힘, 통신 홀드 등으로 출력이 변하지 않음 — 노이즈 완전 소실(flatline)이 특징. 제어루프에 들어가 있으면 제어 성능 저하로 직결',
+      appliesTo: '모든 아날로그 계기',
+      actions: ['현장 지시계와 DCS 값 비교', '해당 태그가 제어 PV면 수동 전환 검토', '계기 전원/루프 전류(4-20mA) 점검', 'HART 상태 진단 확인'],
+      vendorRefs: [
+        'NAMUR NE 107 상태분류 기준 F(Failure) — 즉시 조치 대상 [표준 검증]',
+      ],
+    },
+    drift: {
+      name: '계기 드리프트(영점/스팬) 의심', ne107: 'S (Out of Specification)',
+      mechanism: '센서 노화·온도영향·과압이력 등으로 서서히 한 방향으로 치우침 — 연관 신호는 정지 상태인데 한 태그만 단조 이동하면 공정보다 계기 원인 가능성. 이중센서 계기의 Drift Alert와 같은 논리를 태그 간 상관으로 근사',
+      appliesTo: '모든 아날로그 계기 (특히 온도 센서)',
+      actions: ['교정 이력·주기 확인 후 현장 교정', '이중화 계기면 상호 편차 확인', '온도계는 센서(RTD/TC) 열화 점검', '공정 원인(실제 변화) 배제 후 조치'],
+      vendorRefs: [
+        'Emerson Rosemount 3144P(이중센서) — Hot Backup(센서 자동절체) + Sensor Drift Alert(두 센서 편차 감시) [공식 PDS 검증]',
+        'Yokogawa YTA 시리즈 — 이중 입력·센서 백업 기능',
+        'ABB TTH300 — 이중센서 드리프트 감시(허용편차 설정)·센서 리던던시 [공식 매뉴얼 검증]',
+      ],
+    },
+    noisy: {
+      name: '과도 노이즈/스파이크 (결선·접지·EMI) 의심', ne107: 'M (Maintenance Required)',
+      mechanism: '단자 이완, 실드 접지 불량, 인버터(VFD) 노이즈 유입, 수분 침투 등 — 같은 설비의 다른 태그는 조용한데 한 태그만 스파이크가 반복되면 공정보다 계기·결선 원인 가능성',
+      appliesTo: '모든 계기 (VFD 주변 4-20mA 루프 특히 취약)',
+      actions: ['단자함 결선·실드 접지 점검', '케이블 루트의 동력선 이격 확인', '루프 전류 파형 확인', '수분/부식 점검'],
+      vendorRefs: [
+        'NAMUR NE 107 상태분류 기준 M(Maintenance Required) [표준 검증]',
+      ],
+    },
+  };
+
+  // ---------- 제조사 계기 레퍼런스 (현장 사용 벤더: Emerson·Yokogawa·ABB) ----------
+  // 용도: 계기 이상 검출 시 현장 확인 포인트(HART 진단 기능명) 안내 + 온톨로지 지식.
+  // [검증] 표시는 공식 문서(제품 페이지/매뉴얼/기술노트)로 확인된 항목.
+  const VENDOR_REFS = {
+    emerson: {
+      name: 'Emerson (Rosemount)',
+      items: [
+        { measure: '압력/차압 (PT·PDT·FT·LT DP식)', models: 'Rosemount 3051 / 3051S', diag: 'Advanced HART Diagnostics Suite(옵션 DA2): SPM 통계공정감시(σ·평균·변동계수)로 임펄스라인 막힘 검출, Power Advisory(루프 전원 열화) [검증]' },
+        { measure: '온도 (TT)', models: 'Rosemount 3144P / 644', diag: '이중센서 Hot Backup(무충격 자동절체), Sensor Drift Alert(센서 간 편차 감시, 기본 3°C), 열화 진단 [검증]' },
+      ],
+    },
+    yokogawa: {
+      name: 'Yokogawa',
+      items: [
+        { measure: '압력/차압 (PT·PDT·FT·LT DP식)', models: 'EJX/EJA 시리즈 (DPharp 실리콘 공진 센서)', diag: '옵션 /DG6 고급진단: ILBD 임펄스라인 막힘 검출(고압측/저압측/양측 구분), 플랜지 온도 기반 히트트레이스 감시 [검증]' },
+        { measure: '온도 (TT)', models: 'YTA610 / YTA710', diag: '이중 센서 입력, 센서 백업 자동절체, 센서 단선 진단' },
+      ],
+    },
+    abb: {
+      name: 'ABB',
+      items: [
+        { measure: '압력/차압 (PT·PDT·FT·LT DP식)', models: '266 시리즈 (2600T)', diag: 'PILD 막힘 임펄스라인 검출 — HART/PROFIBUS PA/FF 표준 탑재 [검증]' },
+        { measure: '온도 (TT)', models: 'TTH300 / TTF300', diag: '이중센서 드리프트 감시(허용편차 설정형), 센서 리던던시(평균+백업), 부식 검출 [검증]' },
+      ],
+    },
+    common: {
+      name: '공통 표준',
+      items: [
+        { measure: '전 계기', models: 'NAMUR NE 107', diag: '자가진단 상태 4분류: F(Failure)·C(Function Check)·S(Out of Specification)·M(Maintenance Required) — HART/FF/PROFIBUS 공통 채택 [검증]' },
+      ],
+    },
+  };
+
   // ---------- 기본 플랜트 모델 (데모: NCC 분해가스 구역 일부) ----------
   // tags[].role 은 FAILURE_LIB의 symptom role과 매칭된다.
   function defaultModel() {
@@ -867,6 +946,7 @@
   return {
     ISA51_FIRST, classifyTag,
     EQUIP_CLASSES, FAILURE_LIB, failureModesFor, matchFailureModes,
+    INSTRUMENT_LIB, VENDOR_REFS,
     defaultModel, listAssets, findAsset, listTags, tagsByRole,
     load, save, reset, toLLMContext,
   };

@@ -222,9 +222,32 @@
       });
     }
 
+    // 5) 계기(트랜스미터) 이상 — 공정 알람과 별도 채널 (정비 계기팀 대상)
+    const instrTags = new Set();
+    for (const ins of analysis.instruments || []) {
+      instrTags.add(ins.tagId);
+      conds.push({
+        key: `${aid}.instr.${ins.tagId}`,
+        active: ins.sev >= 0.3,
+        priority: (ins.type === 'stuck' || ins.type === 'impulse_plug') ? PRIORITY.MED : PRIORITY.LOW,
+        asset: aid,
+        message: `${asset.name}: ${ins.tagId} 계기 점검 — ${ins.evidence}`,
+        evidence: { type: 'instrument', instrType: ins.type, tagId: ins.tagId, sev: ins.sev },
+      });
+    }
+    // 계기 이상 태그가 SPE 최대 기여자면 SPE 알람에 계기 원인 가능성 주석
+    if (instrTags.size && analysis.mv) {
+      const spe = conds.find(c => c.key === `${aid}.mv.spe`);
+      const topC = (analysis.mv.topContributors || [])[0];
+      if (spe && topC && instrTags.has(topC.name)) {
+        spe.message += ` ⚠ 최대 기여 태그(${topC.name})에 계기 이상 징후 — 공정보다 계기 원인 가능성 먼저 확인`;
+      }
+    }
+
     // 알람 합리화 (ISA-18.2 first-out 그룹핑):
     // 진단(고장모드) 알람이 활성이면 같은 설비의 하위 증상 알람(추세/T²/SPE)은 억제
     // — 원인 1건에 알람 1건. 설계한계(limit) 알람은 안전 관련이라 항상 유지.
+    // 계기(instr) 알람은 별도 채널이라 억제 대상에서 제외.
     const fmActive = conds.some(c => c.key.startsWith(`${aid}.fm.`) && c.active);
     if (fmActive) {
       for (const c of conds) {

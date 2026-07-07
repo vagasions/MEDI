@@ -104,7 +104,8 @@
     } else {
       const active = st.scenarios.map(id => {
         const d = simulator.DEFAULT_ACTIVE.find(a => a.id === id);
-        return d || { id, startFrac: 0.5, endFrac: 1.4 };
+        const sc = simulator.SCENARIOS[id];
+        return d || (sc && sc.frac ? Object.assign({ id }, sc.frac) : { id, startFrac: 0.5, endFrac: 1.4 });
       });
       S.source = datasource.createDemoSource({ active });
     }
@@ -286,7 +287,9 @@
         </div>
         <div class="ac-fm">${top && top.score >= 0.4
           ? `⚠ 의심: <span class="fm-name">${esc(top.mode.name)}</span> (일치도 ${(top.score * 100).toFixed(0)}%)`
-          : '<span class="muted">유의미한 고장모드 징후 없음</span>'}</div>
+          : '<span class="muted">유의미한 고장모드 징후 없음</span>'}${
+          (r.analysis && r.analysis.ok && r.analysis.instruments && r.analysis.instruments.length)
+            ? `<div style="margin-top:3px">🔧 계기 점검: ${r.analysis.instruments.map(i => esc(i.tagId)).join(', ')}</div>` : ''}</div>
         <div class="ac-sparks"></div>
       `;
       card.addEventListener('click', () => go('asset', a.id));
@@ -367,6 +370,15 @@
         </div>
         <div id="adv-facts" style="margin-bottom:10px"></div>
         <div class="grid cols-2" id="adv-charts"></div>
+      </div>
+
+      <div class="panel">
+        <h2>계기 건전성 — 트랜스미터 자가진단 시그니처</h2>
+        <div class="pattern-note">
+          공정 이상과 <strong>계기 자체 고장</strong>(임펄스라인 막힘·출력 고착·드리프트·결선 노이즈)을 분리 진단합니다.
+          스마트 트랜스미터 진단(Rosemount SPM · Yokogawa ILBD · ABB PILD)과 같은 신호 시그니처를 히스토리안 측에서 검사 — NAMUR NE 107 분류로 표시.
+        </div>
+        <div id="instr-cards"></div>
       </div>
 
       <div class="panel">
@@ -476,6 +488,29 @@
         <div class="faint" style="margin-top:4px">${esc(c.mode.leadTime)}</div>
       `;
       fmEl.appendChild(div);
+    }
+
+    // 계기 건전성 카드
+    const insEl = $('#instr-cards');
+    const insList = an.instruments || [];
+    if (!insList.length) {
+      insEl.innerHTML = '<div class="faint">계기 이상 징후 없음 — 전 태그 노이즈·응답 정상 범위.</div>';
+    }
+    for (const ins of insList) {
+      const lib = ontology.INSTRUMENT_LIB[ins.type] || {};
+      const div = document.createElement('div');
+      div.className = 'panel';
+      div.style.background = 'var(--bg2)';
+      div.innerHTML = `
+        <h3 style="margin-top:0">${esc(ins.tagId)} — ${esc(lib.name || ins.type)}
+          <span class="badge ${ins.sev > 0.7 ? 'g-alarm' : 'g-warn'}">${(ins.sev * 100).toFixed(0)}%</span>
+          <span class="tag-chip" style="cursor:default">NE 107: ${esc(lib.ne107 || '-')}</span></h3>
+        <div style="font-size:12.5px;margin-top:4px">근거: ${esc(ins.evidence)}</div>
+        <div class="muted" style="font-size:12.5px;margin-top:4px">메커니즘: ${esc(lib.mechanism || '')}</div>
+        ${lib.actions ? `<div style="font-size:12.5px;margin-top:6px"><strong>확인 순서</strong>: ${esc(lib.actions.join(' → '))}</div>` : ''}
+        ${lib.vendorRefs ? `<div class="faint" style="margin-top:6px">${lib.vendorRefs.map(r => `· ${esc(r)}`).join('<br>')}</div>` : ''}
+      `;
+      insEl.appendChild(div);
     }
   }
 
@@ -960,6 +995,22 @@
         <div id="isa-out" class="faint"></div>
       </div>
       <div class="panel">
+        <h2>계기 제조사 레퍼런스 — Emerson · Yokogawa · ABB</h2>
+        <div class="pattern-note">
+          본 시스템의 계기 건전성 진단(임펄스라인 막힘 = 노이즈 붕괴 등)은 아래 벤더 자가진단 기능과 같은 시그니처를
+          히스토리안 측에서 검사합니다. 계기 이상 검출 시 해당 트랜스미터의 HART 진단으로 교차 확인하세요.
+          <strong>[검증]</strong> = 공식 문서(제품 페이지·매뉴얼·기술노트)로 확인된 항목.
+        </div>
+        <div class="table-scroll"><table class="data">
+          <thead><tr><th>제조사</th><th>측정</th><th>대표 기종</th><th>진단 기능</th></tr></thead>
+          <tbody>
+            ${Object.values(ontology.VENDOR_REFS).map(v => v.items.map((it, i) => `
+              <tr>${i === 0 ? `<td rowspan="${v.items.length}"><strong>${esc(v.name)}</strong></td>` : ''}
+              <td>${esc(it.measure)}</td><td>${esc(it.models)}</td><td style="font-size:12px">${esc(it.diag)}</td></tr>`).join('')).join('')}
+          </tbody>
+        </table></div>
+      </div>
+      <div class="panel">
         <h2>LLM 컨텍스트 미리보기 (추후 AI 분석에 전달될 형태)</h2>
         <div class="form-row">
           <label>설비</label>
@@ -1056,6 +1107,7 @@
         observedSymptoms: r.analysis.observed,
         healthScore: r.health.score,
         topCandidates: r.analysis.candidates.slice(0, 2).map(c => ({ id: c.mode.id, name: c.mode.name, score: +c.score.toFixed(2) })),
+        instrumentIssues: (r.analysis.instruments || []).map(i => ({ tagId: i.tagId, type: i.type, sev: +i.sev.toFixed(2), evidence: i.evidence })),
       } : {};
       $('#onto-ctx').textContent = JSON.stringify(ontology.toLLMContext(S.model, aid, extra), null, 2);
     };
@@ -1151,6 +1203,7 @@
             last: +d.lastValue.toFixed(2), shiftSigma: +d.zShift.toFixed(2), varRatio: +d.varRatio.toFixed(2), unit: d.unit,
           }])),
           multivariate: r.analysis.mv ? { t2ViolFrac: +r.analysis.mv.t2ViolFrac.toFixed(2), speViolFrac: +r.analysis.mv.speViolFrac.toFixed(2), topContributors: r.analysis.mv.topContributors } : null,
+          instrumentIssues: (r.analysis.instruments || []).map(i => ({ tagId: i.tagId, type: i.type, sev: +i.sev.toFixed(2), evidence: i.evidence })),
         } : {};
         const ctx = ontology.toLLMContext(S.model, aid, extra);
         S.llmBusy = true; S.llmOut = '';
@@ -1266,6 +1319,8 @@
       st.gatewayUrl = ($('#set-gwurl') ? $('#set-gwurl').value.trim() : st.gatewayUrl) || st.gatewayUrl;
       saveSettings();
       S.source = null;
+      // 시나리오/소스가 바뀌면 이전 알람 상태는 무효 — 엔진 재생성(첫 로드처럼 2회 평가 시딩)
+      S.alarmEngine = health.createAlarmEngine({ mOfN: [2, 3], offDelay: 2 });
       await refreshData();
       scheduleAutoRefresh();
     });

@@ -330,6 +330,9 @@
     // 3) 고장모드 후보 매칭
     const candidates = ontology.matchFailureModes(asset.class, observed);
 
+    // 3.5) 계기(트랜스미터) 건전성 — 공정 이상과 분리해 계기 자체 고장을 검출
+    const instruments = instrumentHealth(asset, aligned, tagDiag, candidates, baseIdx, recentIdx);
+
     // 4) 다변량 감시 (PCA T²/SPE + Mahalanobis)
     let mvResult = null;
     if (aligned.ids.length >= 3 && baseEnd >= aligned.ids.length * 5) {
@@ -370,8 +373,88 @@
       assetId: asset.id, ok: true,
       aligned: { t: aligned.t, n, baseIdx, recentIdx },
       tagDiag, derived, derivedDiag, observed,
-      candidates, mv: mvResult, adv: advResult,
+      candidates, instruments, mv: mvResult, adv: advResult,
     };
+  }
+
+  // ---------- 계기(트랜스미터) 건전성 진단 ----------
+  // 히스토리안 신호 시그니처만으로 계기 고장을 검출 — 스마트 트랜스미터 자가진단과 동일 원리:
+  //  · 임펄스라인 막힘 = 노이즈(표준편차) 붕괴, 평균 유지 (Rosemount 3051S SPM / Yokogawa EJX ILBD / ABB 266 PILD)
+  //  · 출력 고착 = 노이즈 완전 소실(flatline)
+  //  · 드리프트 = 한 태그만 단조 이동, 연관 태그·고장모드로 설명 안 됨 (이중센서 Drift Alert의 단독계기 근사)
+  function instrumentHealth(asset, aligned, tagDiag, candidates, baseIdx, recentIdx) {
+    const issues = [];
+    const tags = (asset.tags || []).filter(t => tagDiag[t.id] && aligned.cols[t.id]);
+    if (tags.length < 2) return issues;
+    const dtH = aligned.t.length > 1 ? (aligned.t[1] - aligned.t[0]) / 3600000 : 1 / 12;
+    const diffStd = (xs) => {
+      if (xs.length < 3) return 0;
+      const dif = [];
+      for (let i = 1; i < xs.length; i++) dif.push(xs[i] - xs[i - 1]);
+      return stats.std(dif);
+    };
+
+    // 상위 고장모드가 설명하는 role — 단독 드리프트의 공정원인 감별에 사용
+    const explained = new Set();
+    const top = candidates && candidates[0];
+    if (top && top.score > 0.3) for (const s of top.mode.symptoms) explained.add(s.role);
+
+    for (const t of tags) {
+      const d = tagDiag[t.id];
+      const v = aligned.cols[t.id];
+      const rec = v.slice(recentIdx[0], recentIdx[1]);
+      const meas = (ontology.classifyTag(t.id) || {}).measure;
+      const sibs = tags.filter(x => x.id !== t.id).map(x => tagDiag[x.id]);
+
+      // 1) 출력 고착(stuck/frozen): 최근 끝에서 연속 동일값 지속시간
+      // 개도(position) 신호는 스틱션/정상 정지 시 수 시간 정지가 물리적으로 정상 — 장시간 기준 적용
+      let run = 1;
+      for (let i = rec.length - 1; i > 0 && rec[i] === rec[i - 1]; i--) run++;
+      const stuckH = run * dtH;
+      const stuckLim = meas === 'position' ? 12 : 1.5;
+      if (stuckH >= stuckLim) {
+        issues.push({
+          type: 'stuck', tagId: t.id, role: t.role, desc: t.desc, sev: clamp01(stuckH / 6),
+          evidence: `${stuckH.toFixed(1)}시간 연속 동일값 (노이즈 완전 소실) — 현재 ${d.lastValue}${t.unit || ''}`,
+        });
+        continue;
+      }
+
+      // 2) 노이즈 붕괴 — 임펄스라인 막힘 시그니처 (압력/차압/유량/레벨 등 도압배관 계기)
+      // 전체 σ에는 부하 변동(저주파)이 섞이므로 1차 차분 σ(고주파 노이즈)의 비율로 판정 — SPM과 동일 관점
+      const hfBase = diffStd(v.slice(baseIdx[0], baseIdx[1]));
+      const hfRec = diffStd(rec);
+      const nr = hfRec / Math.max(hfBase, 1e-9);
+      const dpType = meas === 'pressure' || meas === 'dp' || meas === 'flow' || meas === 'level';
+      if (dpType && hfBase > 1e-6 && nr < 0.3 && Math.abs(d.zShift) < 2) {
+        issues.push({
+          type: 'impulse_plug', tagId: t.id, role: t.role, desc: t.desc, sev: clamp01((0.3 - nr) / 0.25),
+          evidence: `공정 노이즈(고주파 σ) ${((1 - nr) * 100).toFixed(0)}% 감소 (${hfBase.toFixed(3)}→${hfRec.toFixed(3)}), 평균은 유지 — 막힘/동결의 전형 시그니처`,
+        });
+        continue;
+      }
+
+      // 3) 스파이크 폭주 — 동일 설비 다른 태그는 조용한데 이 태그만 튐 (결선/EMI/접지)
+      // zShift 가드: 평균이 크게 이동한 태그는 스파이크 지표가 오염되므로(모든 점이 4σ 초과) 제외
+      const sibSpike = sibs.reduce((m, x) => Math.max(m, x.spike), 0);
+      if (d.spike > 0.6 && sibSpike < 0.2 && Math.abs(d.zShift) < 2) {
+        issues.push({
+          type: 'noisy', tagId: t.id, role: t.role, desc: t.desc, sev: d.spike,
+          evidence: `4σ 초과 스파이크 ${(d.spikeFrac * 100).toFixed(1)}% — 같은 설비 다른 태그는 정상(최대 ${(sibSpike * 100).toFixed(0)}%)`,
+        });
+        continue;
+      }
+
+      // 4) 단독 드리프트 — 이 태그만 단조 이동 + 연관 태그 정지 + 고장모드로 설명 불가
+      const sibShift = sibs.reduce((m, x) => Math.max(m, Math.abs(x.zShift)), 0);
+      if (Math.abs(d.zShift) > 2.5 && d.trendR2 > 0.4 && sibShift < 0.8 && !explained.has(t.role)) {
+        issues.push({
+          type: 'drift', tagId: t.id, role: t.role, desc: t.desc, sev: clamp01(Math.abs(d.zShift) / 6),
+          evidence: `단독 ${d.zShift > 0 ? '상승' : '하강'} ${Math.abs(d.zShift).toFixed(1)}σ (R²=${d.trendR2.toFixed(2)}) — 연관 태그 최대 ${sibShift.toFixed(1)}σ, 고장모드 라이브러리로 설명 안 됨`,
+        });
+      }
+    }
+    return issues;
   }
 
   // ---------- 최신 기법 종합 (Isolation Forest·ECOD·PELT·Matrix Profile·RUL) ----------
@@ -480,5 +563,5 @@
     };
   }
 
-  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis };
+  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis, instrumentHealth };
 });

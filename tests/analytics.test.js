@@ -384,5 +384,58 @@ t('adv 통합 — 베어링 시나리오에서 온셋/합의 검출', () => {
   assert(an.adv.onset.t >= t45, `온셋 ${new Date(an.adv.onset.t).toISOString()}`);
 });
 
+console.log('== 계기(트랜스미터) 건전성 ==');
+t('임펄스라인 막힘 → impulse_plug 검출 + 중간 알람', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'pt202_plug', startFrac: 0.45, endFrac: 0.8 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'C-201');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  const ins = (an.instruments || []).find(i => i.tagId === 'PT-202');
+  assert(ins && ins.type === 'impulse_plug' && ins.sev > 0.5, JSON.stringify(an.instruments));
+  const conds = health.conditionsFromAnalysis(a, an, health.computeHealth(an));
+  const c = conds.find(x => x.key === 'C-201.instr.PT-202');
+  assert(c && c.active && c.priority === health.PRIORITY.MED, JSON.stringify(c));
+});
+t('출력 고착 → stuck 검출', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'tt113_stuck', startFrac: 0.45, endFrac: 0.8 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'P-101B');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  const ins = (an.instruments || []).find(i => i.tagId === 'TT-113');
+  assert(ins && ins.type === 'stuck' && ins.sev > 0.7, JSON.stringify(an.instruments));
+});
+t('공정 원인 단독 이동(TR 누유)은 계기 이상으로 오진하지 않음', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'tr101_oil', startFrac: 0.4, endFrac: 1.2 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'TR-101');
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert((an.instruments || []).length === 0, JSON.stringify(an.instruments));
+  assert(an.candidates[0] && an.candidates[0].mode.id === 'TR-OIL', '공정 고장모드 유지');
+});
+t('정상 운전 전 설비 — 계기 오탐 없음', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  for (const a of ontology.listAssets(m)) {
+    const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+    if (!an.ok) continue;
+    assert((an.instruments || []).length === 0, `${a.id}: ${JSON.stringify(an.instruments)}`);
+  }
+});
+t('INSTRUMENT_LIB/VENDOR_REFS — 구조·제조사 3사 존재', () => {
+  for (const k of ['impulse_plug', 'stuck', 'drift', 'noisy']) {
+    const e = ontology.INSTRUMENT_LIB[k];
+    assert(e && e.name && e.ne107 && e.actions.length, k);
+  }
+  for (const v of ['emerson', 'yokogawa', 'abb']) {
+    assert(ontology.VENDOR_REFS[v] && ontology.VENDOR_REFS[v].items.length >= 2, v);
+  }
+});
+
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
 process.exit(fail ? 1 : 0);
