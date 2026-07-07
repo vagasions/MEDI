@@ -1,0 +1,50 @@
+# MEDI PdM 게이트웨이 설정
+# 사용법: 이 파일을 config.yaml 로 복사한 뒤 현장 환경에 맞게 수정
+#   cp config.example.yaml config.yaml
+#   uvicorn main:app --host 0.0.0.0 --port 8137
+
+server:
+  port: 8137
+  # 웹앱(GitHub Pages 또는 로컬 index.html)에서 접근을 허용할 오리진
+  cors_origins: ["*"]
+
+# 사용할 커넥터: simulator | dataparc_rest | opcua | parcdata_sql | csv_dir
+connector: simulator
+
+# ── ① dataPARC.Store REST API (신형 dataPARC — 권장) ─────────────────
+# 검증된 엔드포인트: GET /api/v1/read/raw|aggregate|at-time|current
+# 참고: https://github.com/dataPARC/store (OpenAPI: dataparc.github.io/store/rest)
+dataparc_rest:
+  base_url: "https://DATAPARC-SERVER:12340"   # HTTPS 전용, 포트는 사이트마다 다를 수 있음
+  verify_tls: true                             # 사내 자가서명 인증서면 false 또는 CA 경로
+  # 보안 활성 서버(OAuth)라면 토큰 발급 후 기입. GET /auth-info 로 보안 여부 확인 가능
+  bearer_token: null
+  # 태그 ID ↔ dataPARC 태그 식별자 매핑 (웹앱 태그명 → dataPARC tagId/이름)
+  tags:
+    FT-101: "Plant.NCC.FT101.PV"
+    PT-101: "Plant.NCC.PT101.PV"
+    # ...
+
+# ── ② OPC UA (모든 dataPARC 서버에 존재 — 구버전 포함 범용) ───────────
+opcua:
+  endpoint: "opc.tcp://DATAPARC-SERVER:51235/Capstone/OPCUAServer"
+  # 인증: anonymous | username
+  auth: anonymous
+  username: null
+  password: null
+  # 태그 ID → NodeId 매핑
+  tags:
+    FT-101: "ns=2;s=Plant.NCC.FT101.PV"
+    # ...
+
+# ── ③ PARCdata SQL (SQL Server + CLR 함수 배포된 사이트) ─────────────
+# SELECT * FROM ctc_fn_PARCdata_ReadRawTags('tag1,tag2', @start, @end, 0)
+parcdata_sql:
+  dsn: "DRIVER={ODBC Driver 17 for SQL Server};SERVER=SQLSERVER;DATABASE=ctc_config;Trusted_Connection=yes"
+  tags:
+    FT-101: "Plant.NCC.FT101.PV"
+    # ...
+
+# ── ④ CSV 폴더 감시 (dataPARC 내보내기 파일을 폴더에 떨어뜨리는 방식) ──
+csv_dir:
+  path: "./data"        # *.csv 를 읽음 (wide: Time,TAG1,TAG2… / long: Time,Tag,Value)

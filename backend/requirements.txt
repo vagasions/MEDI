@@ -1,0 +1,11 @@
+# MEDI PdM 게이트웨이 — 필수
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pyyaml>=6.0
+httpx>=0.27
+
+# 선택: 사용하는 커넥터만 설치
+# OPC UA 커넥터 (opc.tcp://SERVER:51235/Capstone/OPCUAServer)
+# asyncua>=1.1
+# PARCdata SQL 커넥터 (SQL Server + ctc_fn_PARCdata_* 함수)
+# pyodbc>=5.1

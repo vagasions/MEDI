@@ -1,0 +1,8 @@
+# 현장별 설정 (config.example.yaml을 복사해 사용)
+backend/config.yaml
+backend/venv/
+backend/data/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
