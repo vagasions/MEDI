@@ -110,6 +110,64 @@ async def read_current(tagIds: str = Query(...)):
     return {"values": await connector.read_current(ids)}
 
 
+@app.get("/api/v1/diag")
+async def diag():
+    """단계별 자가진단 — 웹앱의 '연결 진단 마법사'가 호출.
+
+    각 단계: {step, ok, detail, hint} — hint는 실패 시 현장에서 확인할 순서.
+    """
+    steps = []
+
+    def add(step: str, ok: bool, detail: str = "", hint: str = ""):
+        steps.append({"step": step, "ok": ok, "detail": detail, "hint": hint})
+
+    # 1) 설정 파일
+    cfg_exists = os.path.exists(CONFIG_PATH)
+    add(
+        "설정 파일(config.yaml)", True,
+        f"{CONFIG_PATH} {'로드됨' if cfg_exists else '없음 — 내장 시뮬레이터로 동작 중'}",
+        "" if cfg_exists else "cp config.example.yaml config.yaml 후 커넥터를 지정하세요",
+    )
+    # 2) 커넥터 종류
+    add("커넥터", True, f"{connector.name} (connector: {config.get('connector', 'simulator')})",
+        "실제 dataPARC 연동은 dataparc_rest(신형) 또는 opcua(범용 폴백)를 지정")
+
+    # 3) 태그 목록
+    tag_list = []
+    try:
+        tag_list = await connector.list_tags()
+        add("태그 목록 조회", len(tag_list) > 0, f"{len(tag_list)}개",
+            "" if tag_list else "커넥터는 살아있으나 태그가 0개 — 태그 매핑(config.yaml tags:) 또는 원본 권한 확인")
+    except Exception as e:  # noqa: BLE001 — 진단 목적상 전체 포착
+        add("태그 목록 조회", False, f"{type(e).__name__}: {e}",
+            "dataparc_rest: base_url/포트(기본 12340)/TLS 인증서 · opcua: 51235 포트/보안정책 · SQL: 연결문자열/권한 확인")
+
+    # 4) 샘플 원시 읽기 (첫 태그, 최근 1시간)
+    if tag_list:
+        tid = tag_list[0].get("id") if isinstance(tag_list[0], dict) else tag_list[0]
+        try:
+            e_dt = datetime.now(timezone.utc)
+            s_dt = e_dt - timedelta(hours=1)
+            series = await connector.read_raw([tid], s_dt, e_dt)
+            pts = len((series.get(tid) or {}).get("t", [])) if isinstance(series, dict) else 0
+            add("샘플 읽기 (최근 1시간)", pts > 0, f"{tid}: {pts}점",
+                "" if pts else "히스토리 읽기 실패/0점 — 기간·아카이브 보존기간·히스토리 권한 확인. dataPARC 히스토리는 SQL이 아닌 파일 아카이브임에 유의")
+            # 5) 타임스탬프 신선도/순서
+            if pts:
+                ts = series[tid]["t"]
+                fresh_min = (e_dt.timestamp() * 1000 - ts[-1]) / 60000
+                ordered = all(ts[i] <= ts[i + 1] for i in range(len(ts) - 1))
+                add("타임스탬프 검증", ordered and fresh_min < 60,
+                    f"마지막 값 {fresh_min:.0f}분 전, 순서 {'정상' if ordered else '역순 발견'}",
+                    "" if ordered and fresh_min < 60 else "서버/수집기 타임존(UTC vs 로컬) 설정과 시각 동기(NTP) 확인")
+        except Exception as e:  # noqa: BLE001
+            add("샘플 읽기 (최근 1시간)", False, f"{type(e).__name__}: {e}",
+                "인증(OAuth/사용자) 만료, 태그ID 형식(정수 ID vs 이름), 기간 파라미터 형식(ISO8601) 확인")
+
+    ok_all = all(s["ok"] for s in steps)
+    return {"ok": ok_all, "steps": steps, "gateway_time_utc": datetime.now(timezone.utc).isoformat()}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(config.get("server", {}).get("port", 8137)))

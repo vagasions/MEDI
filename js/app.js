@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv, backtest } = window.MEDI;
+  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv, backtest, calc, quality } = window.MEDI;
 
   // ---------- 상태 ----------
   const LS_SETTINGS = 'medi.settings.v1';
@@ -124,6 +124,8 @@
       if (!S.source) await initSource();
       else await S.source.refresh();
       S.seriesMap = await S.source.getSeriesMap();
+      applyCalcTags();
+      computeQuality();
       analyzeAll();
       S.lastUpdate = Date.now();
     } catch (e) {
@@ -131,6 +133,27 @@
     }
     S.loading = false;
     render();
+  }
+
+  // 계산 태그(수식) — 설정에 저장된 수식을 매 로드마다 가상 태그로 생성
+  function applyCalcTags() {
+    S.calcErrors = {};
+    for (const ct of S.settings.calcTags || []) {
+      try {
+        S.seriesMap[ct.name] = calc.makeSeries(S.seriesMap, ct.expr);
+      } catch (e) {
+        S.calcErrors[ct.name] = e.message;
+      }
+    }
+  }
+
+  // 데이터 품질 리포트 — "불러온 값이 제대로인가"
+  function computeQuality() {
+    const meta = {};
+    for (const t of ontology.listTags(S.model)) meta[t.id] = { lo: t.lo, hi: t.hi, kind: t.kind };
+    // 데모는 갱신 시점이 곧 now — stale 기준을 소스 모드에 맞춤
+    const staleHours = S.settings.mode === 'demo' ? 999 : 2;
+    S.quality = quality.report(S.seriesMap, meta, { staleHours });
   }
 
   function analyzeAll() {
@@ -683,6 +706,26 @@
       ])}
       <div class="grid cols-2">
         <div class="panel">
+          <h2>데이터 품질 검증 <span class="faint">— 불러온 값이 제대로인가</span></h2>
+          <div id="dq-body"></div>
+        </div>
+        <div class="panel">
+          <h2>계산 태그 <span class="faint">— 값을 원하는 대로 응용 (단위환산·차이·비율·스케일 보정)</span></h2>
+          ${explainBox('계산 태그 사용법', [
+            ['문법', '태그는 <b>[대괄호]</b>로: <code>[FT-101]*0.16667</code> (단위환산), <code>[PT-102]-[PT-101]</code> (차압), <code>max([TT-103],[TT-104])</code>. 사칙연산·괄호·abs/min/max/sqrt/log/exp 지원.'],
+            ['용도', '품질 검증에서 "×100 스케일 의심"이 뜨면 <code>[태그]*100</code>으로 보정 태그를 만들고, 그 태그를 조합에 매핑하면 됩니다. 수집이 안 되는 파생값(차압 등)도 직접 계산.'],
+            ['동작', '매 데이터 갱신마다 자동 재계산되어 가상 태그로 추가됩니다 — 트렌드·조합·백테스트 모두에서 실제 태그처럼 사용.'],
+          ])}
+          <div class="form-row">
+            <input type="text" id="ct-name" placeholder="태그 이름 (예: DP-CALC)" style="width:150px">
+            <input type="text" id="ct-expr" placeholder="수식 (예: [PT-102]-[PT-101])" style="flex:1">
+            <button class="btn primary" id="ct-add">추가</button>
+          </div>
+          <div id="ct-list" style="margin-top:8px"></div>
+        </div>
+      </div>
+      <div class="grid cols-2">
+        <div class="panel">
           <h2>① 태그 브라우저 <span class="faint">(${allIds.length}개 로드됨${filtered.length !== allIds.length ? ' · ' + filtered.length + '개 일치' : ''})</span></h2>
           <div class="form-row"><input type="text" id="dp-q" placeholder="태그 검색 (예: PT, 401, VT-)" value="${esc(dp.q)}" style="flex:1"></div>
           <div class="table-scroll" style="max-height:420px;overflow-y:auto"><table class="data">
@@ -734,6 +777,45 @@
       </div>
     `;
     wireTopbar();
+    // 품질 리포트 렌더
+    (function renderQuality() {
+      const el = $('#dq-body');
+      const qr = S.quality;
+      if (!qr) { el.innerHTML = '<div class="faint">데이터 로드 후 자동 검증됩니다.</div>'; return; }
+      const head = qr.issueTagCount === 0
+        ? `<div class="notice">✓ ${qr.tagCount}개 태그 전부 품질 이상 없음 (공백·정체·NaN·역순·스케일 검사)</div>`
+        : `<div class="notice ${qr.errors ? 'warn' : ''}">${qr.tagCount}개 중 <strong>${qr.issueTagCount}개 태그</strong>에서 이슈 — 오류 ${qr.errors} · 주의 ${qr.warns}</div>`;
+      const rows = Object.entries(qr.perTag).slice(0, 40).map(([id, issues]) =>
+        `<tr><td><code>${esc(id)}</code></td><td>${issues.map(i =>
+          `<div style="font-size:12px">${i.sev === 'error' ? '🟥' : '🟨'} ${esc(i.msg)}</div>`).join('')}</td></tr>`).join('');
+      el.innerHTML = head + (rows ? `<div class="table-scroll" style="max-height:260px;overflow-y:auto"><table class="data"><thead><tr><th>태그</th><th>이슈</th></tr></thead><tbody>${rows}</tbody></table></div>` : '');
+    })();
+    // 계산 태그 목록/추가/삭제
+    (function renderCalc() {
+      const list = $('#ct-list');
+      const cts = S.settings.calcTags || [];
+      list.innerHTML = cts.length ? cts.map((c, i) => `
+        <div class="form-row">
+          <code>${esc(c.name)}</code> = <code style="flex:1">${esc(c.expr)}</code>
+          ${S.calcErrors && S.calcErrors[c.name] ? `<span class="badge g-alarm" title="${esc(S.calcErrors[c.name])}">오류</span>` : '<span class="badge g-good">적용됨</span>'}
+          <button class="btn small" data-ctdel="${i}">삭제</button>
+        </div>`).join('') : '<div class="faint">계산 태그 없음</div>';
+      document.querySelectorAll('[data-ctdel]').forEach(b => b.addEventListener('click', () => {
+        S.settings.calcTags.splice(+b.dataset.ctdel, 1);
+        saveSettings();
+        refreshData();
+      }));
+    })();
+    $('#ct-add').addEventListener('click', () => {
+      const name = $('#ct-name').value.trim();
+      const expr = $('#ct-expr').value.trim();
+      if (!name || !expr) { alert('이름과 수식을 입력하세요.'); return; }
+      try { calc.compile(expr); } catch (e) { alert('수식 오류: ' + e.message); return; }
+      if (!S.settings.calcTags) S.settings.calcTags = [];
+      S.settings.calcTags.push({ name, expr });
+      saveSettings();
+      refreshData();
+    });
     $('#dp-q').addEventListener('input', e => { dp.q = e.target.value; render(); $('#dp-q').focus(); const v = $('#dp-q'); v.setSelectionRange(v.value.length, v.value.length); });
     document.querySelectorAll('[data-dpsel]').forEach(c => c.addEventListener('change', () => {
       const id = c.dataset.dpsel;
@@ -1652,6 +1734,7 @@
             <label>게이트웨이 URL</label>
             <input type="text" id="set-gwurl" value="${esc(st.gatewayUrl)}" style="flex:1" placeholder="http://localhost:8137">
             <button class="btn small" id="set-gwtest">연결 테스트</button>
+            <button class="btn small" id="set-gwdiag">🩺 연결 진단 마법사</button>
           </div>
           <div class="faint">공장 PC에서 <code>backend/</code>의 게이트웨이를 실행하면 dataPARC(dataPARC.Store REST/OPC UA/PARCdata SQL)에서 태그 데이터를 가져옵니다. 설치법은 backend/README.md 참조.</div>
           <div id="set-gwout" class="faint" style="margin-top:6px"></div>
@@ -1688,6 +1771,25 @@
           사내망 LLM(Ollama/vLLM/LiteLLM/Azure 등)은 "OpenAI 호환"을 선택해 주소만 지정하면 됩니다.
         </div>
         <div id="llm-form"></div>
+      </div>
+
+      <div class="panel">
+        <h2>트러블슈팅 — 증상별 원인과 해결</h2>
+        <div class="table-scroll"><table class="data">
+          <thead><tr><th>증상</th><th>가능 원인 (가능성 순)</th><th>해결</th></tr></thead>
+          <tbody>
+            <tr><td>연결 테스트 실패 (응답 없음)</td><td>게이트웨이 미실행 → 방화벽 → 주소 오타</td><td>게이트웨이 PC에서 <code>uvicorn main:app --host 0.0.0.0 --port 8137</code> 확인 → Windows 방화벽 인바운드 8137 허용 → 진단 마법사 실행</td></tr>
+            <tr><td>연결은 되는데 태그 0개</td><td>config.yaml 태그 매핑 누락 / 원본 권한 없음</td><td>config.yaml의 <code>tags:</code> 매핑 작성, dataPARC 보안콘솔에서 읽기권한 확인</td></tr>
+            <tr><td>태그는 있는데 데이터 0점</td><td>기간 밖 / 히스토리 권한 / 아카이브 보존기간</td><td>기간을 줄여 재시도. dataPARC 히스토리는 SQL이 아닌 <strong>파일 아카이브</strong> — ctc_config DB 직쿼리로는 안 나옴</td></tr>
+            <tr><td>값이 이상함 (×100, 단위 다름)</td><td>스케일/단위 불일치 (0-1 vs 0-100%, bar vs kg/cm²)</td><td>"데이터 준비 → 데이터 품질"이 자동 의심 표시 → <strong>계산 태그</strong>로 보정 (예: <code>[태그]*100</code>)</td></tr>
+            <tr><td>최근 데이터가 안 옴 (몇 시간 전까지만)</td><td>타임존 혼선(UTC vs 로컬) / 시각 비동기</td><td>진단 마법사의 "시각 동기" 단계 확인, 게이트웨이·수집기 NTP 동기</td></tr>
+            <tr><td>그래프가 뚝뚝 끊김</td><td>수집기 중단 이력 / 네트워크 불안정</td><td>품질 리포트의 "수집 공백" 시각을 수집기(PARCserver 수집 서비스) 재시작 이력과 대조</td></tr>
+            <tr><td>HTTPS 페이지에서 연결 안 됨</td><td>혼합 콘텐츠 차단 (https→http)</td><td>웹앱을 http로 서빙하거나 게이트웨이에 TLS — 사내망은 http+http 조합이 간단</td></tr>
+            <tr><td>REST 연결됐는데 태그가 전부 UnknownOrInactiveTag</td><td>read 엔드포인트는 <strong>숫자 태그 ID(int32)</strong>만 받음 — 이름을 넘긴 경우 (공식 스펙 확인)</td><td>config.yaml 태그 매핑에 숫자 ID 기입, 또는 "Group/Interface/TagName" 형태로 쓰면 게이트웨이가 기동 시 자동 해석</td></tr>
+            <tr><td>REST 연결 안 되는 구형 서버</td><td>dataPARC.Store 미도입 (신형 전용)</td><td>OPC UA 폴백 사용: <code>opc.tcp://서버:51235/Capstone/OPCUAServer</code> — 전 버전 공통. UaExpert로 먼저 접속 확인</td></tr>
+          </tbody>
+        </table></div>
+        <div class="faint" style="margin-top:6px">진단 순서 권장: ① 진단 마법사 → ② 게이트웨이 콘솔 로그 → ③ UaExpert/PARCview로 원본 접근 확인(웹앱 문제인지 원본 문제인지 분리) → ④ 데이터 품질 리포트</div>
       </div>
 
       <div class="panel">
@@ -1740,6 +1842,56 @@
       } catch (e) {
         out.textContent = '❌ 연결 실패: ' + e.message + ' (게이트웨이 실행 여부/CORS/URL 확인)';
       }
+    });
+    const gwDiag = $('#set-gwdiag');
+    if (gwDiag) gwDiag.addEventListener('click', async () => {
+      const url = $('#set-gwurl').value.trim().replace(/\/+$/, '');
+      const out = $('#set-gwout');
+      const steps = [];
+      const push = (name, ok, detail, hint) => steps.push({ name, ok, detail: detail || '', hint: hint || '' });
+      const draw = (running) => {
+        out.innerHTML = steps.map(s => `
+          <div style="margin:4px 0;font-size:12.5px">${s.ok === null ? '⏳' : s.ok ? '✅' : '❌'} <strong>${esc(s.name)}</strong> — ${esc(s.detail)}
+          ${s.hint ? `<div class="faint" style="margin-left:22px">→ ${esc(s.hint)}</div>` : ''}</div>`).join('')
+          + (running ? '<div class="faint">진단 중…</div>' : '');
+      };
+      // 0) 브라우저 측 사전 점검
+      if (!/^https?:\/\//.test(url)) { push('URL 형식', false, url || '(비어있음)', 'http://호스트:8137 형태로 입력'); draw(false); return; }
+      if (location.protocol === 'https:' && url.startsWith('http://')) {
+        push('혼합 콘텐츠', false, 'HTTPS 페이지에서 HTTP 게이트웨이 호출은 브라우저가 차단',
+          '웹앱을 http로 서빙하거나 게이트웨이에 TLS 적용 (사내망은 http+http 조합이 간단)');
+      } else {
+        push('브라우저 사전 점검', true, `페이지 ${location.protocol} → 게이트웨이 ${url.split(':')[0]}: 호환`);
+      }
+      draw(true);
+      const j = async (path) => {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 8000);
+        try { const r = await fetch(url + path, { signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+        finally { clearTimeout(t); }
+      };
+      // 1) 도달성
+      try {
+        const h = await j('/api/v1/health');
+        push('게이트웨이 도달', true, `커넥터 ${h.connector}, 태그 ${h.tags}개`);
+      } catch (e) {
+        push('게이트웨이 도달', false, e.name === 'AbortError' ? '8초 응답 없음' : e.message,
+          e.message.startsWith('HTTP') ? '게이트웨이 로그 확인 (uvicorn 콘솔)' :
+          '순서대로: ① 게이트웨이 PC에서 uvicorn 실행 중? ② 같은 PC 브라우저에서 ' + url + '/api/v1/health 열림? ③ 열리면 방화벽 8137 인바운드, 안 열리면 게이트웨이 문제 ④ CORS는 게이트웨이가 기본 허용(*)이므로 주소/포트 우선 확인');
+        draw(false); return;
+      }
+      draw(true);
+      // 2) 게이트웨이 자가진단 (커넥터→태그→샘플읽기→타임스탬프)
+      try {
+        const d = await j('/api/v1/diag');
+        for (const s of d.steps) push('[게이트웨이] ' + s.step, s.ok, s.detail, s.hint);
+        // 시각 오차
+        const drift = Math.abs(Date.now() - new Date(d.gateway_time_utc).getTime()) / 60000;
+        push('PC-게이트웨이 시각 동기', drift < 5, `오차 ${drift.toFixed(1)}분`, drift < 5 ? '' : 'NTP 동기화 확인 — 시각이 어긋나면 "최근 데이터 없음"으로 보임');
+      } catch (e) {
+        push('게이트웨이 자가진단', false, e.message, '구버전 게이트웨이면 backend/ 업데이트 후 재기동');
+      }
+      draw(false);
     });
     const csvFile = $('#set-csvfile');
     if (csvFile) csvFile.addEventListener('change', async e => {

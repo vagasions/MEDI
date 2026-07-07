@@ -12,17 +12,27 @@ server:
 connector: simulator
 
 # ── ① dataPARC.Store REST API (신형 dataPARC — 권장) ─────────────────
-# 검증된 엔드포인트: GET /api/v1/read/raw|aggregate|at-time|current
-# 참고: https://github.com/dataPARC/store (OpenAPI: dataparc.github.io/store/rest)
+# 공식 OpenAPI 스펙으로 검증 (github.com/dataPARC/store → rest/dataparcstore.json,
+# 렌더링: https://dataparc.github.io/store/rest/):
+#   · read 엔드포인트의 tagIds 는 숫자 태그 ID(int32)만 받음 — "ex: 45,100,2291"
+#   · 이름 조회: GET /api/v1/tags?group=&interface= (브라우즈) 또는
+#                GET /api/v1/tags/{group}/{interface}/{name} (단건)
+#   · 타임스탬프 ISO8601 UTC(Z, ms), 값에 quality(int32), 태그별 status
+#     (Success/NoValues/UnknownOrInactiveTag/Unlicensed...)
+#   · HTTPS 전용, 기본 포트 12340. 보안 여부는 GET /auth-info (루트 경로!)
+#   · dataPARC.Store 도입 사이트(release2405+) 전용 — 구형 PARChistory는 ② OPC UA 사용
 dataparc_rest:
-  base_url: "https://DATAPARC-SERVER:12340"   # HTTPS 전용, 포트는 사이트마다 다를 수 있음
+  base_url: "https://DATAPARC-SERVER:12340"   # HTTPS 전용
   verify_tls: true                             # 사내 자가서명 인증서면 false 또는 CA 경로
-  # 보안 활성 서버(OAuth)라면 토큰 발급 후 기입. GET /auth-info 로 보안 여부 확인 가능
+  # 보안 활성 서버(OAuth)라면 토큰 발급 후 기입. GET {base}/auth-info 로 보안 여부 확인
   bearer_token: null
-  # 태그 ID ↔ dataPARC 태그 식별자 매핑 (웹앱 태그명 → dataPARC tagId/이름)
+  # 태그 매핑 (웹앱 태그명 → dataPARC 식별자) — 두 형태 지원:
+  #   숫자 ID를 알면:        FT-101: 4512
+  #   정규화 이름만 알면:    FT-101: "InterfaceGroup/Interface/TagName"  (기동 시 ID 자동 해석)
+  # 숫자 ID는 PARCview 태그 속성 또는 GET /api/v1/tags 로 확인
   tags:
-    FT-101: "Plant.NCC.FT101.PV"
-    PT-101: "Plant.NCC.PT101.PV"
+    FT-101: "Plant/NCC/FT101.PV"
+    PT-101: "Plant/NCC/PT101.PV"
     # ...
 
 # ── ② OPC UA (모든 dataPARC 서버에 존재 — 구버전 포함 범용) ───────────

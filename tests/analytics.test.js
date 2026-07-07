@@ -617,5 +617,36 @@ t('사용자 조합 자산 — 생성/분석/삭제', () => {
   assert(!ontology.findAsset(m, 'USR-TEST'));
 });
 
+console.log('== 계산 태그 + 데이터 품질 ==');
+const calc = require(path.join(__dirname, '../js/analytics/calc.js'));
+const quality = require(path.join(__dirname, '../js/analytics/quality.js'));
+t('계산 태그 — 수식 평가/보간/악성입력 차단', () => {
+  const c = calc.compile('([FT-101]*([PT-102]-[PT-101]))/[IT-106]');
+  assert(near(c.eval({ 'FT-101': 200, 'PT-102': 18, 'PT-101': 2, 'IT-106': 80 }), 40));
+  assert(near(calc.compile('-[A]+max([A],[B])*2').eval({ A: 3, B: 5 }), 7));
+  assert.throws(() => calc.compile('[A]; alert(1)'));
+  assert.throws(() => calc.compile('1+2')); // 태그 참조 필수
+  const sm = { A: { t: [0, 60000], v: [10, 20] }, B: { t: [0, 60000], v: [1, 3] } };
+  const s = calc.makeSeries(sm, '[A]*[B]');
+  assert(near(s.v[1], 60));
+});
+t('데이터 품질 — 역순/NaN/스케일 의심 검출, 정상 무이슈', () => {
+  const bad = { t: [0, 1000, 500, 2000], v: [1, NaN, 3, 3] };
+  const codes = quality.checkSeries(bad, { nowMs: 3000, staleHours: 999 }).map(i => i.code);
+  assert(codes.includes('out_of_order') && codes.includes('nonfinite'), codes.join(','));
+  const scaled = { t: Array.from({ length: 100 }, (_, i) => i * 60000), v: Array.from({ length: 100 }, (_, i) => 0.5 + Math.sin(i) * 0.3) };
+  assert(quality.checkSeries(scaled, { nowMs: 100 * 60000, lo: 0, hi: 100 }).some(i => i.code === 'range_suspect'));
+  const healthy = { t: Array.from({ length: 200 }, (_, i) => i * 60000), v: Array.from({ length: 200 }, (_, i) => 50 + Math.sin(i) * 5) };
+  assert(quality.checkSeries(healthy, { nowMs: 200 * 60000, lo: 0, hi: 100 }).length === 0);
+});
+t('데모 시뮬레이터 전 태그 — 품질 이슈 없음 (자가 무결성)', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  const meta = {};
+  for (const tg of ontology.listTags(m)) meta[tg.id] = { lo: tg.lo, hi: tg.hi, kind: tg.kind };
+  const r = quality.report(s.series, meta, { nowMs: 1751846400000, staleHours: 999 });
+  assert(r.errors === 0, JSON.stringify(r.perTag).slice(0, 300));
+});
+
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
 process.exit(fail ? 1 : 0);

@@ -47,6 +47,19 @@ dataPARC(Capstone Technology)가 공식 제공하는 외부 접근 수단과 권
 
 > ⚠ 히스토리는 SQL Server에 저장되지 않음(파일 기반 아카이브). `ctc_config` DB 직쿼리는 설정/이벤트만 나온다.
 
+**공식 OpenAPI 스펙 재검증 결과** (github.com/dataPARC/store → `rest/dataparcstore.json`, OpenAPI 3.0.4):
+- read 엔드포인트의 `tagIds`는 **숫자 태그 ID(int32)** 전용("ex: 45,100,2291") — 이름 불가.
+  이름→ID 해석: `GET /api/v1/tags?group=&interface=`(브라우즈) / `GET /api/v1/tags/{group}/{interface}/{name}`(단건).
+  자유검색(/tags/search)은 스펙에 없음. 게이트웨이 커넥터가 기동 시 자동 해석하도록 구현됨.
+- 타임스탬프 ISO 8601 UTC "Z"(ms). 원시값에 `quality`(int32), 집계에 `srcQuality`+`histQuality`.
+  태그별 `status` enum: Success/NoValues/UnknownOrInactiveTag/Unlicensed/InvalidDateRange.
+- `/read/aggregate`: aggregate 38종(TimeAverage, Interpolative, PlotReduction 등) + `interval`, `useUtc`, `alignment`.
+- 보안: `GET /auth-info` (루트 경로 — /api/v1 아님) → {ClientId, Authority, Scopes, IsSecured}. HTTPS 전용.
+- 적용 범위: dataPARC.Store(release2405+) 전용 — 구형 PARChistory 사이트는 OPC UA(51235)/PARCdata 경로.
+- 대량/스트리밍은 gRPC `SDKService.StreamRawData` 공식 Python 예제 존재(같은 저장소).
+- PARCview 서버 앱(PARCIO·PARCcalc·PARCalarm·UA Server)은 FireDaemon 하에서 구동, 로그는 `...\Capstone\PARCView\LogFiles`.
+- CORS 정책은 미공개 — **브라우저 직접 호출 대신 게이트웨이 경유가 정석** (본 설계 그대로).
+
 **현장 첫 단계 체크리스트**
 1. `https://<서버>:12340/auth-info` 와 `/api/v1/read/current?tagIds=…` 응답 확인 (신형 여부)
 2. UaExpert로 `opc.tcp://<서버>:51235/Capstone/OPCUAServer` 접속 확인 (폴백)
