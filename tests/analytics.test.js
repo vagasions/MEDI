@@ -484,5 +484,21 @@ t('정상 운전: 디지털 오탐 없음 + 아날로그 파이프라인에서 �
   assert(h.score >= 85, `score ${h.score}`);
 });
 
+t('계전기 아날로그(THL 열용량): 트립 전에 과열을 선행 검출', () => {
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'M-401');
+  // endFrac을 늘려 아직 트립 전(과열 진행 중) 상태
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'm401_trip', startFrac: 0.5, endFrac: 1.6 },
+  ] });
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.tripped === false, '아직 트립 전');
+  assert(an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift > 2, `THL zShift ${an.tagDiag['THL-410'] && an.tagDiag['THL-410'].zShift}`);
+  assert(an.candidates[0] && an.candidates[0].mode.id === 'EM-WIND' && an.candidates[0].score > 0.4,
+    `1위=${an.candidates[0] && an.candidates[0].mode.id}`);
+  const h = health.computeHealth(an);
+  assert(h.score < 70, `트립 전 경고 score ${h.score}`); // 트립이 오기 전에 잡는 것이 목적
+});
+
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
 process.exit(fail ? 1 : 0);

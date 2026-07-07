@@ -164,7 +164,7 @@
 
     // FV-101 제어루프 상태 (스틱션 시뮬레이션 — 적분형 제어기 + 고착-미끄럼 밸브)
     let fvOp = 62, fvZt = 62, fvPv = 110;
-    let m401Trip = 0, m401W = null; // 86 록아웃 래치 + 권선온도 상태(트립 후 냉각)
+    let m401Trip = 0, m401W = null, m401Th = 55; // 86 록아웃 래치 + 권선온도·열용량 상태
 
     for (let i = 0; i < n; i++) {
       const L = plantLoad(i);      // 0.78~0.98
@@ -350,6 +350,10 @@
         put('XS-407', i, runSt);
         put('XA-408', i, m401Trip);
         put('XA-409', i, m401Trip || pTrip > 0.55 ? 1 : 0); // 트립 전 열동(49) 알람 선행
+        // 보호계전기 아날로그 출력: 49 열모델의 열용량 사용률(%) — I²에 1차 지연 추종
+        const thTarget = m401Trip ? 4 : Math.min(105, 72 * Math.pow(mI / 105, 2) + 34 * pTrip);
+        m401Th += 0.15 * (thTarget - m401Th);
+        put('THL-410', i, Math.max(0, Math.min(100, m401Th + gauss() * 0.5)));
       }
 
       // ===== CT-601 냉각탑 =====

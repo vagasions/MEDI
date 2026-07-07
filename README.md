@@ -82,6 +82,7 @@ XA(알람접점)·XS(상태접점) 태그로 히스토리안에 수집하면 어
 | **Bently Nevada 3500** (API 670) | overall 진동을 히스토리안으로 → 본 시스템이 추세 이상 검출 → System 1에서 스펙트럼 정밀진단. 진동값이 갑자기 0 근처면 프로브/케이블(OK 리밋·갭 전압 -9~-11V) 먼저 의심 |
 | **Atlas Copco** (Elektronikon Mk5/Nano) | 토출온도·부하율을 Modbus로 수집 → 압축기 로직 적용. SMARTLINK 원격감시 병행 |
 | **Yokogawa CENTUM VP / ProSafe-RS** | 알람·이벤트는 Exaopc(OPC A&E)·Exaquantum 경유. 트립 정밀 사건순서는 SIS의 SOE 기록으로 교차 확인 |
+| **ABB 보호계전기** (Relion REF615/REM615·구형 REF/REM54x) | 트립·알람 접점(XA)과 **계전기 아날로그 값**(49 열용량 사용률 % 등)을 함께 수집 → 트립이 뜨기 **전에** 열용량 상승으로 선행 경고. IEC 61850/Modbus → 게이트웨이 경유 |
 | **모터 보호계전기** (GE Multilin 869 등) | 트립/알람 a·b접점을 XA 태그로 수집 → 아날로그 선행 징후(권선온도·전류)와 연계 분석 |
 
 ## 진단 원리 쉬운 설명 (UI 내장)

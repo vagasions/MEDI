@@ -187,6 +187,8 @@
         symptoms: [
           { role: 'wt_residual', pattern: 'up', w: 4 },
           { role: 'winding_temp', pattern: 'up', w: 1 },
+          { role: 'thermal_capacity', pattern: 'up', w: 2 },
+          { role: 'thermal_capacity', pattern: 'high', w: 2 },
           { role: 'motor_current', pattern: 'variance', w: 1 },
         ],
         causes: ['냉각팬/필터 막힘', '전압 불평형', '과부하 운전', '절연 수명'],
@@ -610,7 +612,9 @@
       name: '보호계전기 / 전기 (ANSI·IEEE C37.2)',
       items: [
         { measure: '디바이스 번호', models: 'C37.2 표준', diag: '49 열동(과부하) · 50/51 순시/한시 과전류 · 27/59 부족/과전압 · 46 역상(불평형) · 66 기동횟수 제한 · 86 록아웃(수동 리셋) · 87 차동 · 94 트립 릴레이 [검증]' },
-        { measure: '모터 보호계전기', models: 'GE Multilin 869, ABB, Schneider 등', diag: '트립/알람 이벤트·고장 기록 내장. 트립·알람 접점(a/b접점)을 XA 태그로 수집 → 본 시스템이 아날로그 선행 징후(권선온도·전류)와 연계 분석 [검증]' },
+        { measure: '보호계전기 (ABB Relion)', models: 'REF615(피더) · REM615/REM620(모터)', diag: '49M 열동(MPTTR)·66 기동제한(STTPMSU)·46M 역상 내장. 핵심: 열모델의 <열용량 수준>(TEMP_RL, 1.00=동작레벨)을 모니터링 값으로 노출 — IEC 61850/Modbus로 히스토리안 수집 시 트립 전 선행 감시 가능. 이벤트·고장기록(COMTRADE)·웹 HMI [검증]' },
+        { measure: '보호계전기 (ABB 구형 RE_54x)', models: 'REF541/543/545 피더 터미널 · REM543/545 머신 터미널', diag: 'CAP505 설정, SPA-bus/LON 통신. IEC 61850 연계는 SPA-ZC 400 어댑터, 상위(히스토리안) 연계는 COM600 게이트웨이(내장 OPC 서버) 경유 [검증]' },
+        { measure: '모터 보호계전기 (기타)', models: 'GE Multilin 869, Schneider 등', diag: '트립/알람 이벤트·고장 기록 내장. 트립·알람 접점(a/b접점)을 XA 태그로 수집 → 본 시스템이 아날로그 선행 징후(권선온도·전류·열용량)와 연계 분석 [검증]' },
         { measure: 'Aux Relay / 알람유닛', models: 'ISA 18.1 어나운시에이터', diag: 'first-out 시퀀스(무엇이 먼저 떴는지) 표준. 접점 채터링(반복 단속)은 결선 이완·접점 마모·코일전압 marginal의 대표 증상 (Omron 릴레이 FAQ) [검증]' },
       ],
     },
@@ -626,7 +630,7 @@
   // tags[].role 은 FAILURE_LIB의 symptom role과 매칭된다.
   function defaultModel() {
     return {
-      version: 3,
+      version: 4,
       site: { id: 'YC-PC', name: '여천 석유화학단지 (데모)', standard: 'ISA-95 / ISO 14224' },
       areas: [
         {
@@ -794,6 +798,7 @@
                     { id: 'XS-407', role: 'run_status', desc: '운전 상태 (Aux Relay 접점)', unit: '', kind: 'digital' },
                     { id: 'XA-408', role: 'protection_trip', desc: '보호계전기 트립 (86 록아웃)', unit: '', kind: 'digital', trip: true },
                     { id: 'XA-409', role: 'thermal_alarm', desc: '열동 알람 접점 (49)', unit: '', kind: 'digital' },
+                    { id: 'THL-410', role: 'thermal_capacity', desc: '열용량 사용률 (보호계전기 49 Thermal Level)', unit: '%', lo: 0, hi: 100 },
                   ],
                 },
               ],
@@ -933,7 +938,7 @@
         const raw = localStorage.getItem(LS_KEY);
         if (raw) {
           const m = JSON.parse(raw);
-          if (m && m.version === 3) return m;
+          if (m && m.version === 4) return m;
         }
       }
     } catch (e) { /* 손상 시 기본 모델로 */ }

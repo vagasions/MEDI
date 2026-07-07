@@ -153,7 +153,13 @@ LOF·BOCPD·Spectral Residual 등은 오탐/파라미터 민감성으로 제외)
 
 레퍼런스(공식 문서 검증): ANSI/IEEE C37.2 디바이스 번호, Bently Nevada 3500/3300 XL/System 1(API 670,
 OK 리밋·갭 전압), Atlas Copco Elektronikon Mk5/Nano·SMARTLINK, Yokogawa CENTUM VP·ProSafe-RS SOE·
-Exaopc/Exaquantum, GE Multilin 869, ISA 18.1(어나운시에이터 first-out). → `VENDOR_REFS` + 온톨로지 화면 표.
+Exaopc/Exaquantum, **ABB Relion REF615/REM615·620(49M MPTTR 열용량 TEMP_RL 노출, IEC 61850/Modbus)·
+구형 REF/REM54x(CAP505, SPA-ZC 400, COM600 OPC)**, GE Multilin 869, ISA 18.1(어나운시에이터 first-out).
+→ `VENDOR_REFS` + 온톨로지 화면 표.
+
+**계전기 아날로그 신호 활용**: 보호계전기는 접점(디지털)만이 아니라 자체 열모델 값(열용량 사용률) 같은
+아날로그도 내보낸다. 데모 M-401의 THL-410이 그 예 — 49 열모델이 트립되기 **전에** 열용량 상승 추세로
+선행 경고(트립 예방이 예지보전의 목적). 관련 시그니처는 EM-WIND 고장모드에 통합.
 
 데모: `m401_trip`(과열→49→86 래치→정지·냉각, 권선온도 1차지연 모델), `m401_relay_chatter`.
 
