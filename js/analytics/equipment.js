@@ -81,8 +81,10 @@
     const cu = stats.cusumChart(rec, { mu: bMu, sigma: bSd, k: 0.5, h: 5 });
     const cuViol = cu.violations[cu.violations.length - 1] || 0;
 
-    // 추세항은 적합도(R²)로 감쇠 — 노이즈성 기울기의 오탐 방지
-    const slopeTerm = slopeSig * 8 * Math.min(1, tr.r2 * 2);
+    // 추세항 감쇠 2중: ① 적합도(R²) — 노이즈성 기울기 차단
+    // ② 레벨 이동(|zShift|) 동조 — 일교차 같은 주기 성분의 반주기가 직선으로 적합되는 오탐 차단
+    //    (진짜 열화 램프는 최근 평균도 함께 움직인다)
+    const slopeTerm = slopeSig * 8 * Math.min(1, tr.r2 * 2) * clamp01(Math.abs(zShift) / 0.5);
     const out = {
       up: clamp01(Math.max(zShift / 3, slopeTerm)),
       down: clamp01(Math.max(-zShift / 3, -slopeTerm)),
@@ -512,7 +514,9 @@
       for (let i = rec.length - 1; i > 0 && rec[i] === rec[i - 1]; i--) run++;
       const stuckH = run * dtH;
       const stuckLim = meas === 'position' ? 12 : 1.5;
-      if (stuckH >= stuckLim) {
+      // 개도 정지가 밸브 고장모드(스틱션 등)로 이미 설명되면 계기 고착이 아니라 밸브 문제
+      const valveExplained = meas === 'position' && top && top.score > 0.3 && String(top.mode.id).startsWith('CV-');
+      if (stuckH >= stuckLim && !valveExplained) {
         issues.push({
           type: 'stuck', tagId: t.id, role: t.role, desc: t.desc, sev: clamp01(stuckH / 6),
           evidence: `${stuckH.toFixed(1)}시간 연속 동일값 (노이즈 완전 소실) — 현재 ${d.lastValue}${t.unit || ''}`,
@@ -534,13 +538,12 @@
         continue;
       }
 
-      // 3) 스파이크 폭주 — 동일 설비 다른 태그는 조용한데 이 태그만 튐 (결선/EMI/접지)
-      // zShift 가드: 평균이 크게 이동한 태그는 스파이크 지표가 오염되므로(모든 점이 4σ 초과) 제외
-      const sibSpike = sibs.reduce((m, x) => Math.max(m, x.spike), 0);
-      if (d.spike > 0.6 && sibSpike < 0.2 && Math.abs(d.zShift) < 2) {
+      // 3) 노이즈 폭증 — 고주파 노이즈(1차 차분 σ)가 베이스라인 대비 급증 (결선/EMI/접지)
+      // 막힘 검출(nr<0.3)의 역방향. 추세·평균이동에 면역 — 공정 변화를 노이즈로 오인하지 않음
+      if (nr > 3 && hfBase > 1e-6) {
         issues.push({
-          type: 'noisy', tagId: t.id, role: t.role, desc: t.desc, sev: d.spike,
-          evidence: `4σ 초과 스파이크 ${(d.spikeFrac * 100).toFixed(1)}% — 같은 설비 다른 태그는 정상(최대 ${(sibSpike * 100).toFixed(0)}%)`,
+          type: 'noisy', tagId: t.id, role: t.role, desc: t.desc, sev: clamp01((nr - 3) / 5),
+          evidence: `고주파 노이즈 ${nr.toFixed(1)}배 증가 (σ_diff ${hfBase.toFixed(3)}→${hfRec.toFixed(3)}) — 결선/접지/EMI 의심`,
         });
         continue;
       }

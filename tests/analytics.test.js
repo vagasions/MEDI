@@ -13,9 +13,17 @@ const simulator = require(path.join(__dirname, '../js/simulator.js'));
 const report = require(path.join(__dirname, '../js/report.js'));
 
 let pass = 0, fail = 0;
+const pending = []; // async 테스트 지원 — 전부 끝난 뒤 집계
 function t(name, fn) {
-  try { fn(); pass++; console.log('  ✓', name); }
-  catch (e) { fail++; console.error('  ✗', name, '\n    ', e.message); }
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(
+        () => { pass++; console.log('  ✓', name); },
+        (e) => { fail++; console.error('  ✗', name, '\n    ', e.message); }
+      ));
+    } else { pass++; console.log('  ✓', name); }
+  } catch (e) { fail++; console.error('  ✗', name, '\n    ', e.message); }
 }
 const near = (a, b, tol) => Math.abs(a - b) <= (tol ?? 1e-9);
 
@@ -648,5 +656,36 @@ t('데모 시뮬레이터 전 태그 — 품질 이슈 없음 (자가 무결성)
   assert(r.errors === 0, JSON.stringify(r.perTag).slice(0, 300));
 });
 
-console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
-process.exit(fail ? 1 : 0);
+console.log('== 과거 데이터 가져오기 (CSV/엑셀) ==');
+const datasource = require(path.join(__dirname, '../js/datasource.js'));
+t('한국식 CSV — 점 날짜·오전/오후·따옴표 천단위 콤마', () => {
+  const csv = 'Time,FT-901,PT-902\n' +
+    '2026.07.10 오전 9:00,"1,234.5",12.3\n' +
+    '2026.07.10 오전 9:05,"1,240.1",12.4\n' +
+    '2026.07.10 오후 1:30,"1,250.9",12.6\n';
+  const s = datasource.parseCsv(csv);
+  assert(near(s['FT-901'].v[0], 1234.5) && near(s['FT-901'].v[2], 1250.9));
+  assert(new Date(s['FT-901'].t[2]).getHours() === 13, '오후 1:30 → 13시');
+});
+t('엑셀 직렬값 — 로컬 시각 해석', () => {
+  const ms = datasource.parseTime('45000.5');
+  const d = new Date(ms);
+  assert(d.getHours() === 12 && d.getMinutes() === 0, `${d}`); // .5 = 정오(로컬)
+});
+t('.xlsx 리더 — PARCview 스타일 파일 파싱 (의존성 0)', async () => {
+  // Node 18+ DecompressionStream 내장 — 브라우저와 동일 API
+  if (typeof DecompressionStream === 'undefined') { console.log('    (DecompressionStream 미지원 환경 — 건너뜀)'); return; }
+  const fs = require('fs');
+  const xlsx = require(path.join(__dirname, '../js/xlsx.js'));
+  const buf = fs.readFileSync(path.join(__dirname, 'fixtures/sample-parcview.xlsx'));
+  const s = await xlsx.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  assert(s['FT-901'] && s['FT-901'].t.length === 120, JSON.stringify(Object.keys(s)));
+  assert(near(s['FT-901'].v[0], 1234.5));
+  const d = new Date(s['FT-901'].t[0]);
+  assert(d.getHours() === 9 && d.getMinutes() === 0, `첫 행 09:00 기대 — ${d}`);
+});
+
+Promise.allSettled(pending).then(() => {
+  console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
+  process.exit(fail ? 1 : 0);
+});

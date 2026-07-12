@@ -92,16 +92,35 @@
   // 지원 형식:
   //  wide: Time,FT-101,PT-101,...  (첫 열이 시각)
   //  long: Time,Tag,Value  (또는 Tagname/Timestamp/Value 순서 무관, 헤더로 판별)
-  function parseCsv(text) {
-    const lines = String(text).replace(/\r/g, '').split('\n').filter(l => l.trim().length);
-    if (lines.length < 2) throw new Error('CSV에 데이터 행이 없습니다');
-    const delim = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') && !lines[0].includes(',')) ? ';' : ',';
-    const header = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g, ''));
-    const lower = header.map(h => h.toLowerCase());
+  // 따옴표를 존중하는 필드 분리 — 엑셀 내보내기의 "1,234.5" 같은 천단위 콤마 값 대응
+  function splitLine(line, delim) {
+    const out = [];
+    let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (q && line[i + 1] === '"') { cur += '"'; i++; }
+        else q = !q;
+      } else if (ch === delim && !q) { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
 
-    const tagCol = lower.findIndex(h => ['tag', 'tagname', 'tag name', 'name', '태그'].includes(h));
+  // 숫자 파싱 — 천단위 콤마("1,234.56")·공백 제거
+  function parseNum(s) {
+    let str = String(s == null ? '' : s).trim().replace(/^"|"$/g, '').trim();
+    if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(str)) str = str.replace(/,/g, '');
+    return parseFloat(str);
+  }
+
+  // 헤더 + 행 배열 → 시계열 (CSV/엑셀 공용)
+  function rowsToSeries(header, rows) {
+    const lower = header.map(h => String(h).toLowerCase().trim());
+    const tagCol = lower.findIndex(h => ['tag', 'tagname', 'tag name', 'name', '태그', '태그명'].includes(h));
     const valCol = lower.findIndex(h => ['value', 'val', '값'].includes(h));
-    const timeCol = lower.findIndex(h => ['time', 'timestamp', 'datetime', 'date', '시간', '시각'].includes(h));
+    const timeCol = lower.findIndex(h => ['time', 'timestamp', 'datetime', 'date', '시간', '시각', '일시', '날짜'].includes(h));
 
     const series = {};
     function push(tag, tms, v) {
@@ -111,25 +130,20 @@
     }
 
     if (tagCol >= 0 && valCol >= 0 && timeCol >= 0) {
-      // long 형식
-      for (let i = 1; i < lines.length; i++) {
-        const c = lines[i].split(delim);
+      for (const c of rows) {
         if (c.length <= Math.max(tagCol, valCol, timeCol)) continue;
-        push(c[tagCol].trim().replace(/^"|"$/g, ''), parseTime(c[timeCol]), parseFloat(c[valCol]));
+        push(String(c[tagCol]).trim().replace(/^"|"$/g, ''), parseTime(c[timeCol]), parseNum(c[valCol]));
       }
     } else {
-      // wide 형식: 첫 열 = 시간, 나머지 열 = 태그
       const tCol = timeCol >= 0 ? timeCol : 0;
-      for (let i = 1; i < lines.length; i++) {
-        const c = lines[i].split(delim);
+      for (const c of rows) {
         const tms = parseTime(c[tCol]);
         for (let j = 0; j < header.length; j++) {
           if (j === tCol) continue;
-          push(header[j], tms, parseFloat(c[j]));
+          push(String(header[j]).trim(), tms, parseNum(c[j]));
         }
       }
     }
-    // 시간 정렬
     for (const k of Object.keys(series)) {
       const s = series[k];
       const idx = s.t.map((t, i) => i).sort((a, b) => s.t[a] - s.t[b]);
@@ -137,20 +151,44 @@
       s.v = idx.map(i => s.v[i]);
       if (s.t.length < 2) delete series[k];
     }
-    if (!Object.keys(series).length) throw new Error('CSV에서 유효한 시계열을 찾지 못했습니다 (헤더/형식 확인)');
+    if (!Object.keys(series).length) throw new Error('유효한 시계열을 찾지 못했습니다 (헤더/시간열/형식 확인)');
     return series;
   }
 
+  function parseCsv(text) {
+    const lines = String(text).replace(/\r/g, '').split('\n').filter(l => l.trim().length);
+    if (lines.length < 2) throw new Error('CSV에 데이터 행이 없습니다');
+    const delim = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') && !lines[0].includes(',')) ? ';' : ',';
+    const header = splitLine(lines[0], delim).map(h => h.trim().replace(/^"|"$/g, ''));
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) rows.push(splitLine(lines[i], delim));
+    return rowsToSeries(header, rows);
+  }
+
   function parseTime(s) {
-    const str = String(s).trim().replace(/^"|"$/g, '');
+    let str = String(s).trim().replace(/^"|"$/g, '').trim();
     if (/^\d{10,13}$/.test(str)) { // epoch
       const num = parseInt(str, 10);
       return str.length >= 13 ? num : num * 1000;
     }
-    // "2026-07-07 14:00", "07/07/2026 14:00:00", 엑셀 직렬값 등
+    // 엑셀 직렬값 (1900 기준, 시간은 소수부) — PARCview/엑셀 내보내기에서 흔함.
+    // 주의: 직렬값은 "로컬 시각"으로 저장되므로 로컬 타임존으로 해석한다.
     if (/^\d+(\.\d+)?$/.test(str) && parseFloat(str) > 20000 && parseFloat(str) < 80000) {
-      // Excel serial date (1900 기준)
-      return Math.round((parseFloat(str) - 25569) * 86400000);
+      const serial = parseFloat(str);
+      const utcGuess = Math.round((serial - 25569) * 86400000);
+      const tzOff = new Date(utcGuess).getTimezoneOffset() * 60000;
+      return utcGuess + tzOff;
+    }
+    // 한국식 표기 정규화: "2026.07.12" → "2026-07-12", "오전/오후 3:05" → 24시간제
+    str = str.replace(/^(\d{4})[.\/](\d{1,2})[.\/](\d{1,2})\.?/, (m, y, mo, d) =>
+      `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`);
+    const ap = str.match(/(오전|오후|AM|PM|am|pm)\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (ap) {
+      let h = parseInt(ap[2], 10);
+      const pm = ap[1] === '오후' || ap[1].toLowerCase() === 'pm';
+      if (pm && h < 12) h += 12;
+      if (!pm && h === 12) h = 0;
+      str = str.replace(ap[0], `${String(h).padStart(2, '0')}:${ap[3]}${ap[4] ? ':' + ap[4] : ''}`);
     }
     const d = new Date(str.replace(' ', 'T'));
     if (!isNaN(d.getTime())) return d.getTime();
@@ -170,5 +208,5 @@
     };
   }
 
-  return { createDemoSource, createGatewaySource, createCsvSource, parseCsv, parseTime };
+  return { createDemoSource, createGatewaySource, createCsvSource, parseCsv, parseTime, rowsToSeries, parseNum, splitLine };
 });

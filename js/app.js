@@ -191,9 +191,18 @@
   function computeQuality() {
     const meta = {};
     for (const t of ontology.listTags(S.model)) meta[t.id] = { lo: t.lo, hi: t.hi, kind: t.kind };
-    // 데모는 갱신 시점이 곧 now — stale 기준을 소스 모드에 맞춤
-    const staleHours = S.settings.mode === 'demo' ? 999 : 2;
-    S.quality = quality.report(S.seriesMap, meta, { staleHours });
+    // stale 기준: 데모는 항상 신선, 과거 파일(CSV/엑셀)은 "데이터 끝"이 기준 시각
+    // (지난달 내보낸 파일이 전부 stale로 뜨는 오탐 방지 — 과거 데이터 분석이 주 사용 방식)
+    let nowMs = null;
+    let staleHours = 2;
+    if (S.settings.mode === 'demo') staleHours = 999;
+    else if (S.settings.mode === 'csv') {
+      let end = -Infinity;
+      for (const s of Object.values(S.seriesMap)) if (s.t && s.t.length) end = Math.max(end, s.t[s.t.length - 1]);
+      if (isFinite(end)) nowMs = end;
+      staleHours = 999; // 파일 자체가 과거 기록 — 개별 태그의 정체는 gap/flatline 검사가 잡음
+    }
+    S.quality = quality.report(S.seriesMap, meta, { staleHours, nowMs });
   }
 
   function analyzeAll() {
@@ -215,14 +224,65 @@
     const rounds = firstRun ? 2 : 1;
     let raisedAll = [];
     for (let i = 0; i < rounds; i++) { const r = S.alarmEngine.evaluate(conds, now); raisedAll = raisedAll.concat(r.raised); }
-    // 브라우저 알림 (설정에서 옵트인, 첫 로드는 제외 — 긴급/높음만)
-    if (!firstRun && S.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      for (const ev of raisedAll) {
-        if (ev.priority === health.PRIORITY.URGENT || ev.priority === health.PRIORITY.HIGH) {
-          try { new Notification('MEDI PdM — ' + ev.priority, { body: ev.message, tag: ev.id }); } catch (e) { /* noop */ }
-        }
+    // 알림: ① HTML 내 팝업 토스트(권한 불필요, 기본 켬) ② 브라우저 알림(옵트인)
+    // 첫 로드/시나리오 적용 직후엔 개별 팝업 대신 "활성 경고 요약" 1건 (플러드 방지)
+    const important = raisedAll.filter(ev => ev.priority === health.PRIORITY.URGENT || ev.priority === health.PRIORITY.HIGH);
+    if (S.settings.popupAlarms !== false && important.length) {
+      if (firstRun) {
+        const urg = important.filter(e => e.priority === health.PRIORITY.URGENT).length;
+        showToast({
+          priority: urg ? health.PRIORITY.URGENT : health.PRIORITY.HIGH,
+          time: now,
+          message: `현재 활성 경고 ${important.length}건${urg ? ` (긴급 ${urg}건 포함)` : ''} — ${important.slice(0, 2).map(e => e.message.split(':')[0]).join(', ')}${important.length > 2 ? ' 외' : ''}. 알람 화면에서 확인하세요.`,
+        });
+      } else {
+        for (const ev of important) showToast(ev);
       }
     }
+    if (!firstRun && S.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      for (const ev of important) {
+        try { new Notification('MEDI PdM — ' + ev.priority, { body: ev.message, tag: ev.id }); } catch (e) { /* noop */ }
+      }
+    }
+  }
+
+  // ---------- HTML 내 팝업 토스트 (권한 필요 없음 — 탭이 열려 있으면 항상 동작) ----------
+  function showToast(ev) {
+    let wrap = $('#toasts');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'toasts';
+      document.body.appendChild(wrap);
+    }
+    const urgent = ev.priority === health.PRIORITY.URGENT;
+    const el = document.createElement('div');
+    el.className = 'toast ' + (urgent ? 't-urgent' : 't-high');
+    el.innerHTML = `
+      <div class="t-head">${urgent ? '🚨 긴급' : '⚠️ 높음'} <span class="t-time">${new Date(ev.time).toLocaleTimeString('ko-KR')}</span></div>
+      <div class="t-msg"></div>
+      <div class="t-actions"><button class="btn small t-go">알람 화면</button><button class="btn small t-close">확인</button></div>`;
+    el.querySelector('.t-msg').textContent = ev.message;
+    el.querySelector('.t-close').addEventListener('click', () => el.remove());
+    el.querySelector('.t-go').addEventListener('click', () => { el.remove(); go('alarms'); });
+    wrap.prepend(el);
+    while (wrap.children.length > 4) wrap.lastChild.remove();
+    if (!urgent) setTimeout(() => { if (el.parentNode) el.remove(); }, 20000); // 긴급은 확인 전까지 유지
+    if (S.settings.alarmSound) beep(urgent ? 2 : 1);
+  }
+
+  function beep(times) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      for (let i = 0; i < times; i++) {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 880;
+        g.gain.setValueAtTime(0.12, ctx.currentTime + i * 0.25);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.25 + 0.18);
+        o.connect(g).connect(ctx.destination);
+        o.start(ctx.currentTime + i * 0.25);
+        o.stop(ctx.currentTime + i * 0.25 + 0.2);
+      }
+    } catch (e) { /* 오디오 미지원 무시 */ }
   }
 
   function scheduleAutoRefresh() {
@@ -1792,12 +1852,16 @@
         <div id="set-csv" style="display:${st.mode === 'csv' ? 'block' : 'none'}">
           <h3>CSV 업로드</h3>
           <div class="form-row">
-            <input type="file" id="set-csvfile" accept=".csv,.txt,.tsv">
+            <input type="file" id="set-csvfile" accept=".csv,.txt,.tsv,.xlsx">
           </div>
           <div class="faint">
             지원 형식: <code>Time,FT-101,PT-101,…</code>(wide) 또는 <code>Time,Tag,Value</code>(long).
             dataPARC Excel 애드인/PARCview 내보내기 파일을 그대로 올리면 됩니다.
             태그명이 온톨로지와 일치하면 설비 진단까지, 아니면 트렌드/5패턴 분석이 가능합니다.
+            <br><strong>dataPARC 7 / PARCview 7 사용 시 (실시간 연동이 안 되는 환경):</strong> 이 경로가 기본입니다 —
+            PARCview 트렌드 우클릭 "Export to File"(CSV) 또는 엑셀 애드인(.xlsx)으로 내보내 그대로 업로드하세요.
+            .xlsx 직접 지원, 오전/오후·천단위 콤마·엑셀 날짜 자동 인식. 업로드 즉시 품질 검증이 돌고,
+            과거 파일은 "데이터 끝" 기준으로 판정하므로 지난달 데이터도 정상 분석됩니다. 백테스트도 동일 데이터로 가능.
             ${S.csvSeries ? `<br>현재 로드됨: <strong>${esc(S.csvLabel)}</strong> (태그 ${Object.keys(S.csvSeries).length}개)` : ''}
           </div>
         </div>
@@ -1807,6 +1871,8 @@
           <input type="number" id="set-recent" value="${st.recentHours}" min="1" max="168" style="width:90px">
           <label>과거 데이터 기간(일)</label>
           <input type="number" id="set-histdays" value="${st.histDays || 7}" min="2" max="60" style="width:80px" title="데모/게이트웨이에서 불러올 히스토리 길이 — 백테스트는 길수록 좋음">
+          <label class="chk" title="긴급/높음 알람 발생 시 화면 안 팝업 (권한 불필요)"><input type="checkbox" id="set-popup" ${st.popupAlarms !== false ? 'checked' : ''}> 팝업 알림</label>
+          <label class="chk" title="팝업과 함께 알림음"><input type="checkbox" id="set-sound" ${st.alarmSound ? 'checked' : ''}> 알림음</label>
           <label class="chk" title="긴급/높음 알람 발생 시 브라우저 알림 (탭이 열려 있는 동안)"><input type="checkbox" id="set-notify" ${st.notify ? 'checked' : ''}> 브라우저 알림</label>
           <button class="btn primary" id="set-apply">적용 후 재분석</button>
         </div>
@@ -1835,7 +1901,7 @@
             <tr><td>그래프가 뚝뚝 끊김</td><td>수집기 중단 이력 / 네트워크 불안정</td><td>품질 리포트의 "수집 공백" 시각을 수집기(PARCserver 수집 서비스) 재시작 이력과 대조</td></tr>
             <tr><td>HTTPS 페이지에서 연결 안 됨</td><td>혼합 콘텐츠 차단 (https→http)</td><td>웹앱을 http로 서빙하거나 게이트웨이에 TLS — 사내망은 http+http 조합이 간단</td></tr>
             <tr><td>REST 연결됐는데 태그가 전부 UnknownOrInactiveTag</td><td>read 엔드포인트는 <strong>숫자 태그 ID(int32)</strong>만 받음 — 이름을 넘긴 경우 (공식 스펙 확인)</td><td>config.yaml 태그 매핑에 숫자 ID 기입, 또는 "Group/Interface/TagName" 형태로 쓰면 게이트웨이가 기동 시 자동 해석</td></tr>
-            <tr><td>REST 연결 안 되는 구형 서버</td><td>dataPARC.Store 미도입 (신형 전용)</td><td>OPC UA 폴백 사용: <code>opc.tcp://서버:51235/Capstone/OPCUAServer</code> — 전 버전 공통. UaExpert로 먼저 접속 확인</td></tr>
+            <tr><td>REST 연결 안 되는 구형 서버 (dataPARC 7 / PARCview 7)</td><td>dataPARC.Store(release2405+) 미도입 — 7.x는 REST 없음</td><td>OPC UA 폴백 사용: <code>opc.tcp://서버:51235/Capstone/OPCUAServer</code> — 전 버전 공통. UaExpert로 먼저 접속 확인</td></tr>
           </tbody>
         </table></div>
         <div class="faint" style="margin-top:6px">진단 순서 권장: ① 진단 마법사 → ② 게이트웨이 콘솔 로그 → ③ UaExpert/PARCview로 원본 접근 확인(웹앱 문제인지 원본 문제인지 분리) → ④ 데이터 품질 리포트</div>
@@ -1866,6 +1932,8 @@
     $('#set-apply').addEventListener('click', async () => {
       st.recentHours = Math.max(1, parseInt($('#set-recent').value, 10) || 24);
       st.histDays = Math.max(2, Math.min(60, parseInt($('#set-histdays').value, 10) || 7));
+      st.popupAlarms = $('#set-popup').checked;
+      st.alarmSound = $('#set-sound').checked;
       const wantNotify = $('#set-notify').checked;
       if (wantNotify && !st.notify && typeof Notification !== 'undefined' && Notification.permission === 'default') {
         Notification.requestPermission();
@@ -1993,13 +2061,24 @@
       const f = e.target.files[0];
       if (!f) return;
       try {
-        S.csvSeries = datasource.parseCsv(await f.text());
+        if (/\.xlsx$/i.test(f.name)) {
+          S.csvSeries = await window.MEDI.xlsx.parse(await f.arrayBuffer());
+        } else {
+          S.csvSeries = datasource.parseCsv(await f.text());
+        }
         S.csvLabel = f.name;
         st.mode = 'csv'; saveSettings();
         S.source = null;
         await refreshData();
+        const n = Object.keys(S.csvSeries).length;
+        const span = (() => {
+          let a = Infinity, b = -Infinity;
+          for (const s of Object.values(S.csvSeries)) { a = Math.min(a, s.t[0]); b = Math.max(b, s.t[s.t.length - 1]); }
+          return `${new Date(a).toLocaleString('ko-KR')} ~ ${new Date(b).toLocaleString('ko-KR')}`;
+        })();
+        alert(`불러오기 완료: 태그 ${n}개\n기간: ${span}\n\n"데이터 준비" 화면에서 품질 검증 결과를 확인하세요.`);
       } catch (err) {
-        alert('CSV 파싱 실패: ' + err.message);
+        alert('파일 파싱 실패: ' + err.message);
       }
     });
     renderLlmForm();

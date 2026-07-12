@@ -388,3 +388,21 @@ details.explain .ex-item .ex-k { color: var(--text); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* HTML 내 팝업 토스트 알림 */
+#toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 10px; max-width: min(420px, calc(100vw - 32px));
+}
+.toast {
+  background: var(--bg2); border: 1px solid var(--line-soft); border-radius: 10px;
+  padding: 12px 14px; box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  animation: toast-in 0.25s ease-out;
+}
+.toast.t-urgent { border-color: var(--alarm); box-shadow: 0 8px 28px rgba(239,83,80,0.25); }
+.toast.t-high { border-color: var(--warn); }
+.toast .t-head { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.toast .t-time { float: right; color: var(--text-faint); font-weight: 400; font-size: 11.5px; }
+.toast .t-msg { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; word-break: break-word; }
+.toast .t-actions { margin-top: 8px; display: flex; gap: 6px; justify-content: flex-end; }
+@keyframes toast-in { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }

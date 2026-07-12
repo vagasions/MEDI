@@ -158,7 +158,7 @@
         id: 'HE-FOUL', name: '전열면 오염(fouling)', iso14224: 'PDE (Parameter deviation)',
         mechanism: '스케일·폴리머·생물막 부착으로 총괄전열계수(U) 저하',
         symptoms: [
-          { role: 'u_proxy', pattern: 'down', w: 3 },
+          { role: 'u_proxy', pattern: 'down', w: 6 }, // U저하 = 파울링의 결정적 지표 (정상에선 발생 안 함)
           { role: 'hot_out', pattern: 'up', w: 2 },
           { role: 'cold_out', pattern: 'down', w: 2 },
           { role: 'dp', pattern: 'up', w: 2 },
