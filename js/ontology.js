@@ -680,8 +680,30 @@
   // tags[].role 은 FAILURE_LIB의 symptom role과 매칭된다.
   function defaultModel() {
     return {
-      version: 5,
+      version: 6,
       site: { id: 'YC-PC', name: '여천 석유화학단지 (데모)', standard: 'ISA-95 / ISO 14224' },
+      // 인터록 정의 (사용자 편집 가능 — 트레인/인터록 화면) : 실제 트립 경계
+      interlocks: [
+        { id: 'IL-M401-49', name: 'M-401 권선온도 트립 (49→86)', assetId: 'M-401', logic: 'any',
+          action: '전동기 트립 — 이송펌프 정지', conditions: [{ tagId: 'TT-403', op: '>=', limit: 130 }] },
+        { id: 'IL-P101A-BRG', name: 'P-101A 베어링 고온 인터록', assetId: 'P-101A', logic: 'any',
+          action: '펌프 정지 — 나프타 공급 차질', conditions: [{ tagId: 'TT-103', op: '>=', limit: 78 }] },
+        { id: 'IL-C201-PD', name: 'C-201 토출압 인터록', assetId: 'C-201', logic: 'any',
+          action: '압축기 트립 — 전 플랜트 영향', conditions: [{ tagId: 'PT-202', op: '>=', limit: 4.8 }] },
+        { id: 'IL-T401-DP', name: 'T-401 플러딩 인터록 (ΔP)', assetId: 'T-401', logic: 'any',
+          action: '탑 차압 고고 — 피드 컷', conditions: [{ tagId: 'PDT-442', op: '>=', limit: 5.5 }] },
+        { id: 'IL-F501-TMT', name: 'F-501 TMT 상한 인터록', assetId: 'F-501', logic: 'any',
+          action: '히터 트립 — 분해로 정지', conditions: [{ tagId: 'TT-451', op: '>=', limit: 575 }] },
+      ],
+      // 대표설비(트레인) — 하위 설비를 묶어 종합 분석
+      groups: [
+        { id: 'TRAIN-FEED', name: '나프타 공급 트레인', members: ['P-101A', 'P-101B', 'FV-101', 'XV-701'],
+          desc: '공급펌프 2기 + 유량제어밸브 + 차단밸브 — 어느 하나가 서도 피드 차질' },
+        { id: 'TRAIN-CGC', name: '분해가스 압축 트레인', members: ['C-201', 'C-202', 'E-301'],
+          desc: '원심 1단 + 왕복동 부스터 + 급냉 냉각기' },
+        { id: 'TRAIN-ELEC', name: '전기 구동 계통', members: ['TR-101', 'VFD-401', 'M-401'],
+          desc: '변압기 → 인버터 → 전동기 — 전원 계통 연쇄' },
+      ],
       areas: [
         {
           id: 'A-100', name: '원료 공급 구역 (Feed Section)',
@@ -997,6 +1019,31 @@
     if (i >= 0) unit.assets[i] = asset; else unit.assets.push(asset);
     return asset;
   }
+  function upsertInterlock(model, il) {
+    if (!model.interlocks) model.interlocks = [];
+    const i = model.interlocks.findIndex(x => x.id === il.id);
+    if (i >= 0) model.interlocks[i] = il; else model.interlocks.push(il);
+    return il;
+  }
+  function removeInterlock(model, id) {
+    if (!model.interlocks) return false;
+    const i = model.interlocks.findIndex(x => x.id === id);
+    if (i >= 0) { model.interlocks.splice(i, 1); return true; }
+    return false;
+  }
+  function upsertGroup(model, g) {
+    if (!model.groups) model.groups = [];
+    const i = model.groups.findIndex(x => x.id === g.id);
+    if (i >= 0) model.groups[i] = g; else model.groups.push(g);
+    return g;
+  }
+  function removeGroup(model, id) {
+    if (!model.groups) return false;
+    const i = model.groups.findIndex(x => x.id === id);
+    if (i >= 0) { model.groups.splice(i, 1); return true; }
+    return false;
+  }
+
   function removeCustomAsset(model, assetId) {
     const unit = ensureUserArea(model);
     const i = unit.assets.findIndex(a => a.id === assetId);
@@ -1092,7 +1139,7 @@
         const raw = localStorage.getItem(LS_KEY);
         if (raw) {
           const m = JSON.parse(raw);
-          if (m && m.version === 5) return m;
+          if (m && m.version === 6) return m;
         }
       }
     } catch (e) { /* 손상 시 기본 모델로 */ }
@@ -1141,6 +1188,7 @@
     EQUIP_CLASSES, FAILURE_LIB, failureModesFor, matchFailureModes,
     INSTRUMENT_LIB, VENDOR_REFS, DERIVED_INPUTS,
     signalRequirements, addCustomAsset, removeCustomAsset,
+    upsertInterlock, removeInterlock, upsertGroup, removeGroup,
     defaultModel, listAssets, findAsset, listTags, tagsByRole,
     load, save, reset, toLLMContext,
   };

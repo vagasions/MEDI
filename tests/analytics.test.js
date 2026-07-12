@@ -685,6 +685,52 @@ t('.xlsx 리더 — PARCview 스타일 파일 파싱 (의존성 0)', async () =>
   assert(d.getHours() === 9 && d.getMinutes() === 0, `첫 행 09:00 기대 — ${d}`);
 });
 
+console.log('== 인터록 / 트레인 / 연관분석 ==');
+const interlock = require(path.join(__dirname, '../js/analytics/interlock.js'));
+t('인터록 — 여유/도달예상/상태 판정', () => {
+  // 합성: 베이스 50, 설정 100, 최근 24h 동안 80→95로 상승 (도달 임박)
+  const t0 = 1751846400000, n = 600, dt = 5 * 60000;
+  const ts = Array.from({ length: n }, (_, i) => t0 + i * dt);
+  const vs = ts.map((_, i) => {
+    const frac = i / (n - 1);
+    return frac < 0.6 ? 50 + Math.sin(i / 7) : 50 + (frac - 0.6) / 0.4 * 45 + Math.sin(i / 7);
+  });
+  const r = interlock.assessCondition({ tagId: 'X', op: '>=', limit: 100 }, { t: ts, v: vs });
+  assert(r.ok && r.status !== 'ok', `status ${r.status}`);
+  assert(r.marginPct < 35, `margin ${r.marginPct}`);
+  assert(r.ttaHours !== null && r.ttaHours < 60, `tta ${r.ttaHours}`);
+  // 정상: 변동만 있고 접근 없음
+  const flat = ts.map((_, i) => 50 + Math.sin(i / 7) * 3);
+  const r2 = interlock.assessCondition({ tagId: 'X', op: '>=', limit: 100 }, { t: ts, v: flat });
+  assert(r2.status === 'ok', r2.status);
+});
+t('인터록 — 데모 5건: 정상 전부 ok, 과열 진행 시 M-401 임박', () => {
+  const m = ontology.defaultModel();
+  const sOk = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const rOk = interlock.assessAll(m.interlocks, sOk.series);
+  assert(rOk.every(x => x.status === 'ok'), rOk.map(x => x.id + ':' + x.status).join(','));
+  const sHot = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [{ id: 'm401_trip', startFrac: 0.5, endFrac: 1.2 }] });
+  const il = interlock.assessAll(m.interlocks, sHot.series).find(x => x.id === 'IL-M401-49');
+  assert(il.status === 'near' || il.status === 'approach', il.status);
+});
+t('상관 변화(corrShiftPairs) — 관계 붕괴 쌍 1위 검출', () => {
+  const Xb = [], Xr = [];
+  let s = 7; const rng = () => (s = (s * 48271) % 2147483647) / 2147483647;
+  for (let i = 0; i < 200; i++) { const b = rng(); Xb.push([b, b + 0.05 * rng(), rng()]); }
+  for (let i = 0; i < 200; i++) Xr.push([rng(), rng(), rng()]);
+  const pairs = mv.corrShiftPairs(Xb, Xr, ['A', 'B', 'C'], 3);
+  assert(pairs[0].a === 'A' && pairs[0].b2 === 'B' && Math.abs(pairs[0].delta) > 0.7, JSON.stringify(pairs[0]));
+});
+t('트레인/인터록 편집 헬퍼 — upsert/remove', () => {
+  const m = ontology.defaultModel();
+  ontology.upsertInterlock(m, { id: 'IL-T', name: 'T', assetId: 'P-101A', conditions: [{ tagId: 'TT-103', op: '>=', limit: 70 }] });
+  assert(m.interlocks.some(x => x.id === 'IL-T'));
+  assert(ontology.removeInterlock(m, 'IL-T'));
+  ontology.upsertGroup(m, { id: 'GRP-T', name: 'T', members: ['P-101A', 'E-301'] });
+  assert(m.groups.some(x => x.id === 'GRP-T'));
+  assert(ontology.removeGroup(m, 'GRP-T'));
+});
+
 Promise.allSettled(pending).then(() => {
   console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
   process.exit(fail ? 1 : 0);

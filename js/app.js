@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv, backtest, calc, quality } = window.MEDI;
+  const { stats, mv, equip, health, ontology, simulator, datasource, charts, report, llm, patterns, adv, backtest, calc, quality, interlock } = window.MEDI;
 
   // ---------- 상태 ----------
   const LS_SETTINGS = 'medi.settings.v1';
@@ -220,6 +220,23 @@
         conds = conds.concat(health.conditionsFromAnalysis(r.asset, r.analysis, r.health));
       }
     }
+    // 인터록 평가 → 알람 조건 (violated 긴급 / near 높음 / approach 중간)
+    S.ilResults = interlock.assessAll(S.model.interlocks || [], S.seriesMap, { recentHours: S.settings.recentHours });
+    for (const il of S.ilResults) {
+      const w = il.worst;
+      const msg = w && w.ok
+        ? `인터록 [${il.name}] ${il.status === 'violated' ? '도달!' : '접근'} — ${w.tagId} ${health.fmt(w.last)} / 설정 ${w.limit} (여유 ${w.marginPct.toFixed(0)}%${w.ttaHours ? `, 현 추세로 ~${w.ttaHours < 48 ? w.ttaHours.toFixed(0) + '시간' : (w.ttaHours / 24).toFixed(1) + '일'} 후 도달` : ''}). 조치: ${il.action || '해당 설비 점검'}`
+        : `인터록 [${il.name}] 데이터 없음`;
+      conds.push({
+        key: `il.${il.id}`,
+        active: il.status === 'violated' || il.status === 'near' || il.status === 'approach',
+        priority: il.status === 'violated' ? health.PRIORITY.URGENT : il.status === 'near' ? health.PRIORITY.HIGH : health.PRIORITY.MED,
+        asset: il.assetId,
+        message: msg,
+        evidence: { type: 'interlock', id: il.id, status: il.status },
+      });
+    }
+
     const firstRun = S.alarmEngine.events.length === 0 && Object.keys(S.alarmEngine.states).length === 0;
     const rounds = firstRun ? 2 : 1;
     let raisedAll = [];
@@ -301,6 +318,7 @@
     { group: '감시' },
     { id: 'dashboard', ico: '📊', name: '대시보드' },
     { id: 'asset', ico: '⚙️', name: '설비 상세' },
+    { id: 'trains', ico: '🔗', name: '트레인 / 인터록' },
     { id: 'alarms', ico: '🔔', name: '알람 / 이벤트' },
     { group: '분석' },
     { id: 'dataprep', ico: '🧩', name: '데이터 준비 / 조합' },
@@ -352,6 +370,7 @@
     switch (S.view) {
       case 'dashboard': viewDashboard(main); break;
       case 'asset': viewAsset(main); break;
+      case 'trains': viewTrains(main); break;
       case 'dataprep': viewDataPrep(main); break;
       case 'backtest': viewBacktest(main); break;
       case 'trends': viewTrends(main); break;
@@ -524,6 +543,24 @@
           <div class="chart-box"><h3>SPE/Q (상관구조 붕괴)</h3><canvas id="ch-spe"></canvas></div>
         </div>
         <div id="mv-contrib" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <h2>신호 연관 분석 — 전류·온도 같은 신호쌍의 관계 변화</h2>
+        <div class="pattern-note">
+          정상일 때 "항상 같이 움직이던" 신호쌍(예: 전류↔권선온도)의 상관이 최근에 얼마나 변했는지 봅니다.
+          관계가 <strong>깨지는 것</strong>(0.9→0.3)도, 없던 관계가 <strong>생기는 것</strong>도 열화의 신호입니다.
+        </div>
+        ${explainBox('관계 변화를 읽는 법', [
+          ['상관 ρ', '-1~+1. +0.9 = 거의 항상 같이 움직임. 전류가 오르면 권선온도도 오르는 게 정상 — 이 관계가 약해지면 냉각·계기·부하전달 어딘가가 변한 것.'],
+          ['산점도', '가로·세로가 두 신호. 회색 = 정상(베이스라인) 시절의 관계, 주황 = 최근. 두 구름이 갈라져 있으면 관계가 이동/붕괴한 것입니다.'],
+          ['활용', '고장모드 매칭이 애매할 때 어떤 신호쌍부터 의심할지 알려주는 나침반. SPE(다변량) 경보의 "무엇이 깨졌나"를 쌍 단위로 풀어 보여줍니다.'],
+        ])}
+        <div id="corr-shift"></div>
+        <div class="grid cols-2" style="margin-top:8px">
+          <div class="chart-box"><h3 id="cs-title">신호쌍 산점도</h3><canvas id="cs-scatter"></canvas></div>
+          <div id="cs-table"></div>
+        </div>
       </div>
 
       <div class="panel">
@@ -702,6 +739,36 @@
       fmEl.appendChild(div);
     }
 
+    // 신호 연관 분석 (상관 변화 + 산점도)
+    (function renderCorrShift() {
+      const el = $('#corr-shift');
+      if (!el) return;
+      const aligned = equip.alignSeries(S.seriesMap, (a.tags || []).filter(t => t.kind !== 'digital').map(t => t.id).filter(id => S.seriesMap[id]));
+      if (aligned.t.length < 60 || aligned.ids.length < 2) { el.innerHTML = '<div class="faint">신호가 부족합니다.</div>'; return; }
+      const n = aligned.t.length;
+      const baseEnd = an.aligned.baseIdx[1];
+      const recStart = an.aligned.recentIdx[0];
+      const rows = i0 => (i1 => Array.from({ length: i1 - i0 }, (_, k) => aligned.ids.map(id => aligned.cols[id][i0 + k])));
+      const Xb = rows(0)(Math.min(baseEnd, n));
+      const Xr = rows(Math.min(recStart, n - 5))(n);
+      const pairs = mv.corrShiftPairs(Xb, Xr, aligned.ids, 5);
+      if (!pairs.length) { el.innerHTML = '<div class="faint">상관 계산 불가.</div>'; return; }
+      el.innerHTML = '';
+      $('#cs-table').innerHTML = `<table class="data"><thead><tr><th>신호쌍</th><th>정상 ρ</th><th>최근 ρ</th><th>변화</th></tr></thead><tbody>${
+        pairs.map((p, i) => `<tr style="${i === 0 ? 'font-weight:700' : ''}"><td><code>${esc(p.a)}</code>↔<code>${esc(p.b2)}</code></td>
+          <td>${p.base.toFixed(2)}</td><td>${p.recent.toFixed(2)}</td>
+          <td style="color:${Math.abs(p.delta) > 0.4 ? 'var(--warn)' : 'inherit'}">${p.delta > 0 ? '+' : ''}${p.delta.toFixed(2)}${Math.abs(p.delta) > 0.4 ? ' ⚠' : ''}</td></tr>`).join('')
+      }</tbody></table><div class="faint" style="margin-top:4px">|변화| 0.4 초과는 관계 이동으로 볼 만합니다 (굵은 행이 산점도에 표시됨)</div>`;
+      const top = pairs[0];
+      $('#cs-title').textContent = `${top.a} ↔ ${top.b2} (회색=정상, 주황=최근)`;
+      const ia = aligned.ids.indexOf(top.a), ib = aligned.ids.indexOf(top.b2);
+      const pts = [];
+      const step = Math.max(1, Math.floor(baseEnd / 400));
+      for (let i = 0; i < baseEnd; i += step) pts.push({ x: aligned.cols[top.a][i], y: aligned.cols[top.b2][i], c: 0 });
+      for (let i = Math.min(recStart, n - 5); i < n; i++) pts.push({ x: aligned.cols[top.a][i], y: aligned.cols[top.b2][i], c: 1 });
+      charts.scatter($('#cs-scatter'), { points: pts, colors: ['rgba(140,160,180,0.55)', '#f5993d'], xLabel: top.a, yLabel: top.b2, height: 250 });
+    })();
+
     // 밸브 진단 패널 (CV/OV)
     if (an.valve) {
       $('#valve-panel').style.display = '';
@@ -776,6 +843,198 @@
 
   function gradeColor(g) {
     return { good: 'var(--good)', watch: 'var(--watch)', warn: 'var(--warn)', alarm: 'var(--alarm)' }[g] || 'var(--text-dim)';
+  }
+
+  // ---------- 뷰: 트레인(대표설비) / 인터록 종합 감시 ----------
+  function viewTrains(main) {
+    const groups = S.model.groups || [];
+    const ils = S.ilResults || [];
+    const stBadge = s => s === 'violated' ? '<span class="badge g-alarm">도달</span>'
+      : s === 'near' ? '<span class="badge g-alarm">임박</span>'
+      : s === 'approach' ? '<span class="badge g-warn">접근</span>'
+      : s === 'ok' ? '<span class="badge g-good">여유</span>' : '<span class="badge">?</span>';
+
+    main.innerHTML = `
+      ${topbar('트레인 / 인터록 — 종합 감시')}
+      <div class="notice">
+        <strong>인터록</strong> = 실제 트립 경계. 여유(%)와 현 추세 기준 도달 예상 시간을 함께 감시해 "비계획 정지 며칠 전"을 보이게 합니다.
+        <strong>트레인</strong> = 대표설비에 묶인 하위 설비들 — 어느 하나가 서면 전체가 서는 단위로 종합 분석합니다. 둘 다 직접 추가/수정할 수 있습니다.
+      </div>
+      ${explainBox('여유(%)와 도달 예상을 읽는 법', [
+        ['여유 100%', '정상 운전점에 있다는 뜻. 0% = 인터록 설정치 도달(트립). 50% = 정상점과 트립 경계의 중간까지 왔다는 뜻입니다.'],
+        ['도달 예상', '최근 24시간 추세를 직선으로 연장한 근사치 — 추세가 뚜렷할 때(R²>0.35)만 표시하고, 여유가 충분하면 추세만으로 경보하지 않습니다(일교차 오탐 방지).'],
+        ['알람 연동', '도달=긴급, 임박(여유<15% 또는 24h 내)=높음, 접근(여유<35%)=중간 — 알람 화면과 팝업에 자동 반영됩니다.'],
+        ['트레인 보는 법', '구성 설비 중 최저 건강지수가 트레인의 병목입니다. "열화 전파" 줄은 PELT 온셋 시각 순서 — 무엇이 먼저 시작됐는지(원인 후보)를 보여줍니다.'],
+      ])}
+
+      <div class="panel">
+        <h2>인터록 감시 <span class="faint">(${ils.length}건 정의됨)</span></h2>
+        <div class="grid cols-2" id="il-cards"></div>
+        <h3 style="margin-top:16px">인터록 추가 / 수정</h3>
+        <div class="form-row">
+          <input type="text" id="il-name" placeholder="이름 (예: E-301 출구온도 인터록)" style="width:220px">
+          <select id="il-asset">${ontology.listAssets(S.model).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+          <select id="il-tag"></select>
+          <select id="il-op"><option value=">=">≥ (상한)</option><option value="<=">≤ (하한)</option></select>
+          <input type="number" id="il-limit" placeholder="설정치" style="width:100px" step="any">
+          <input type="text" id="il-action" placeholder="트립 시 영향/조치 (예: 압축기 정지)" style="flex:1">
+          <button class="btn primary small" id="il-add">저장</button>
+        </div>
+        <div class="faint">같은 이름으로 저장하면 수정됩니다. 조건이 여러 개인 인터록은 같은 이름으로 반복 저장 대신 온톨로지 JSON 편집을 사용하세요.</div>
+      </div>
+
+      <div class="panel">
+        <h2>트레인 (대표설비 묶음) <span class="faint">(${groups.length}개)</span></h2>
+        <div id="grp-cards"></div>
+        <h3 style="margin-top:16px">트레인 추가 / 수정</h3>
+        <div class="form-row">
+          <input type="text" id="grp-name" placeholder="트레인 이름 (예: 급수 트레인)" style="width:220px">
+          <span class="faint">구성 설비:</span>
+        </div>
+        <div class="tag-chips" id="grp-members">
+          ${ontology.listAssets(S.model).map(a => `<button class="tag-chip" data-grpm="${a.id}">${esc(a.id)}</button>`).join('')}
+        </div>
+        <div class="form-row"><button class="btn primary small" id="grp-add">트레인 저장</button></div>
+      </div>
+    `;
+    wireTopbar();
+
+    // ── 인터록 카드 ──
+    const ilEl = $('#il-cards');
+    ilEl.innerHTML = ils.length ? '' : '<div class="faint">정의된 인터록이 없습니다 — 아래에서 추가하세요.</div>';
+    for (const il of ils) {
+      const card = document.createElement('div');
+      card.className = 'panel';
+      card.style.background = 'var(--bg2)';
+      const condRows = il.conditions.map(c => {
+        if (!c.ok) return `<div class="faint">${esc(c.tagId)}: ${esc(c.reason)}</div>`;
+        const pct = Math.max(0, Math.min(100, c.marginPct));
+        const barColor = c.status === 'violated' || c.status === 'near' ? 'var(--alarm)' : c.status === 'approach' ? 'var(--warn)' : 'var(--good)';
+        return `
+          <div style="margin:8px 0">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px">
+              <span><code>${esc(c.tagId)}</code> ${esc(c.op)} ${c.limit}</span>
+              <span>현재 ${health.fmt(c.last)} · 여유 <strong>${c.marginPct.toFixed(0)}%</strong>${c.ttaHours ? ` · 도달 ~${c.ttaHours < 48 ? c.ttaHours.toFixed(0) + 'h' : (c.ttaHours / 24).toFixed(1) + 'd'}` : ''}</span>
+            </div>
+            <div class="il-bar"><div class="il-fill" style="width:${pct}%;background:${barColor}"></div></div>
+          </div>`;
+      }).join('');
+      card.innerHTML = `
+        <h3 style="margin-top:0;display:flex;align-items:center;gap:8px">${esc(il.name)} ${stBadge(il.status)}
+          <span style="margin-left:auto"><button class="btn small" data-ilgo="${esc(il.assetId)}">설비</button>
+          <button class="btn small" data-ildel="${esc(il.id)}">삭제</button></span></h3>
+        ${condRows}
+        ${il.action ? `<div class="faint">트립 시: ${esc(il.action)}</div>` : ''}`;
+      ilEl.appendChild(card);
+    }
+    document.querySelectorAll('[data-ilgo]').forEach(b => b.addEventListener('click', () => go('asset', b.dataset.ilgo)));
+    document.querySelectorAll('[data-ildel]').forEach(b => b.addEventListener('click', () => {
+      ontology.removeInterlock(S.model, b.dataset.ildel);
+      ontology.save(S.model);
+      analyzeAll();
+      render();
+    }));
+
+    // 인터록 편집 폼 — 설비 선택 시 태그 옵션 갱신
+    const fillTags = () => {
+      const a = ontology.findAsset(S.model, $('#il-asset').value);
+      $('#il-tag').innerHTML = (a ? a.tags.filter(t => t.kind !== 'digital') : []).map(t =>
+        `<option value="${esc(t.id)}">${esc(t.id)} — ${esc(t.desc)}</option>`).join('');
+    };
+    fillTags();
+    $('#il-asset').addEventListener('change', fillTags);
+    $('#il-add').addEventListener('click', () => {
+      const name = $('#il-name').value.trim();
+      const limit = parseFloat($('#il-limit').value);
+      if (!name || !isFinite(limit)) { alert('이름과 설정치를 입력하세요.'); return; }
+      const id = 'IL-' + name.replace(/[^A-Za-z0-9가-힣]/g, '').slice(0, 16);
+      ontology.upsertInterlock(S.model, {
+        id, name, assetId: $('#il-asset').value, logic: 'any',
+        action: $('#il-action').value.trim(),
+        conditions: [{ tagId: $('#il-tag').value, op: $('#il-op').value, limit }],
+      });
+      ontology.save(S.model);
+      analyzeAll();
+      render();
+    });
+
+    // ── 트레인 카드 ──
+    const grpEl = $('#grp-cards');
+    grpEl.innerHTML = groups.length ? '' : '<div class="faint">정의된 트레인이 없습니다.</div>';
+    for (const g of groups) {
+      const members = (g.members || []).map(id => S.results.find(r => r.asset.id === id)).filter(Boolean);
+      const scores = members.filter(r => r.health.score !== null);
+      const minR = scores.slice().sort((a, b) => a.health.score - b.health.score)[0];
+      // 열화 전파 순서: 신뢰(corroborated) 온셋만
+      const onsets = members
+        .filter(r => r.analysis && r.analysis.ok && r.analysis.adv && r.analysis.adv.onset)
+        .filter(r => {
+          const cons = Math.min(r.analysis.adv.iforest.recentFrac, r.analysis.adv.ecod.recentFrac);
+          const top = r.analysis.candidates[0];
+          return cons > 0.15 || (top && top.score > 0.3);
+        })
+        .map(r => ({ id: r.asset.id, t: r.analysis.adv.onset.t }))
+        .sort((a, b) => a.t - b.t);
+      const card = document.createElement('div');
+      card.className = 'panel';
+      card.style.background = 'var(--bg2)';
+      card.innerHTML = `
+        <h3 style="margin-top:0;display:flex;align-items:center;gap:8px">🏭 ${esc(g.name)}
+          ${minR ? `<span class="badge g-${minR.health.grade}">병목 ${esc(minR.asset.id)} · ${minR.health.score}점</span>` : ''}
+          <span style="margin-left:auto"><button class="btn small" data-grpdel="${esc(g.id)}">삭제</button></span></h3>
+        ${g.desc ? `<div class="faint" style="margin-bottom:6px">${esc(g.desc)}</div>` : ''}
+        <div class="tag-chips">${members.map(r =>
+          `<button class="tag-chip ${r.health.score !== null && r.health.score < 70 ? 'on' : ''}" data-grpgo="${esc(r.asset.id)}"
+            style="${r.health.score !== null && r.health.score < 50 ? 'border-color:var(--alarm);color:var(--alarm)' : r.health.score !== null && r.health.score < 70 ? 'border-color:var(--warn);color:var(--warn)' : ''}">
+            ${esc(r.asset.id)} ${r.health.score ?? '-'}</button>`).join('')}</div>
+        ${onsets.length ? `<div style="font-size:12.5px;margin-top:8px">열화 전파(온셋 순): ${onsets.map((o, i) =>
+          `<strong>${esc(o.id)}</strong>(${new Date(o.t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })})${i < onsets.length - 1 ? ' → ' : ''}`).join('')}
+          — 먼저 시작된 쪽이 원인 후보</div>` : ''}
+        <div class="chart-box" style="margin-top:10px"><h3>구성 설비 간 신호 상관 (대표 태그)</h3><canvas data-grpheat="${esc(g.id)}"></canvas></div>`;
+      grpEl.appendChild(card);
+    }
+    document.querySelectorAll('[data-grpgo]').forEach(b => b.addEventListener('click', () => go('asset', b.dataset.grpgo)));
+    document.querySelectorAll('[data-grpdel]').forEach(b => b.addEventListener('click', () => {
+      ontology.removeGroup(S.model, b.dataset.grpdel);
+      ontology.save(S.model);
+      render();
+    }));
+    // 그룹 히트맵: 각 구성 설비의 대표(최다 이상 or 첫) 태그
+    for (const g of groups) {
+      const canvas = document.querySelector(`[data-grpheat="${g.id}"]`);
+      if (!canvas) continue;
+      const repIds = [];
+      for (const id of g.members || []) {
+        const r = S.results.find(x => x.asset.id === id);
+        if (!r || !r.analysis || !r.analysis.ok) continue;
+        const diag = Object.entries(r.analysis.tagDiag);
+        diag.sort((x, y) => Math.max(y[1].up, y[1].down, y[1].variance) - Math.max(x[1].up, x[1].down, x[1].variance));
+        if (diag[0]) repIds.push(diag[0][0]);
+      }
+      if (repIds.length >= 2) {
+        const al = equip.alignSeries(S.seriesMap, repIds);
+        if (al.t.length > 30) {
+          const X = al.t.map((_, i) => al.ids.map(id => al.cols[id][i]));
+          charts.heatmap(canvas, mv.corrMatrix(X), al.ids);
+        }
+      }
+    }
+
+    // 트레인 편집
+    const sel = new Set();
+    document.querySelectorAll('[data-grpm]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.grpm;
+      if (sel.has(id)) { sel.delete(id); b.classList.remove('on'); }
+      else { sel.add(id); b.classList.add('on'); }
+    }));
+    $('#grp-add').addEventListener('click', () => {
+      const name = $('#grp-name').value.trim();
+      if (!name || sel.size < 2) { alert('이름과 구성 설비 2개 이상을 선택하세요.'); return; }
+      const id = 'GRP-' + name.replace(/[^A-Za-z0-9가-힣]/g, '').slice(0, 16);
+      ontology.upsertGroup(S.model, { id, name, members: [...sel] });
+      ontology.save(S.model);
+      render();
+    });
   }
 
   // ---------- 뷰: 데이터 준비 / 태그 조합 ----------

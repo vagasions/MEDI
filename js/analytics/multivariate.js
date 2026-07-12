@@ -301,7 +301,26 @@
     return X.map(row => mahalanobisD(row, model.mu, model.Cinv));
   }
 
-  return {
+  
+  // 베이스라인 vs 최근 상관행렬 비교 — "항상 같이 움직이던 관계"가 깨진 쌍을 찾는다
+  // 반환: [{i, j, a: id1, b: id2, base, recent, delta}] |delta| 내림차순
+  function corrShiftPairs(Xbase, Xrecent, ids, topK) {
+    const Rb = corrMatrix(Xbase);
+    const Rr = corrMatrix(Xrecent);
+    const out = [];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const b = Rb[i][j], r = Rr[i][j];
+        if (!isFinite(b) || !isFinite(r)) continue;
+        out.push({ i, j, a: ids[i], b2: ids[j], base: b, recent: r, delta: r - b });
+      }
+    }
+    out.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+    return out.slice(0, topK || 5);
+  }
+
+return {
+    corrShiftPairs,
     matMul, transpose, inverse, zeros,
     meanStdCols, standardize, covMatrix, corrMatrix,
     jacobiEigen, pcaFit, pcaApply, topContributors,
