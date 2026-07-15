@@ -200,8 +200,13 @@
     const t2LimEmp = stats.quantile(t2s, o.alpha);
     const speLimEmp = stats.quantile(spes, o.alpha);
 
-    // 이론 한계 — T²: χ² 근사, SPE: Jackson–Mudholkar
+    // 이론 한계 — T²: Phase II(새 관측) F-분포 한계 (Tracy·Young·Mason 1992 / Jackson 1991)
+    //   T²_α = k(n−1)(n+1)/(n(n−k)) · F_α(k, n−k)
+    //   χ² 근사는 n→∞ 극한이라 소표본(짧은 베이스라인)에서 한계를 과소평가해 오탐을 만든다.
     const t2LimChi = stats.chi2Inv(o.alpha, k);
+    const t2LimF = n > k + 2
+      ? (k * (n - 1) * (n + 1)) / (n * (n - k)) * stats.fInv(o.alpha, k, n - k)
+      : null;
     let speLimJM = null;
     if (lamRes.length) {
       const th1 = lamRes.reduce((a, b) => a + b, 0);
@@ -219,7 +224,8 @@
       mu, sd, P, lam, k, p, n,
       eigenvalues: eig.values,
       varRatio: eig.values.map(v => v / total),
-      t2Limit: Math.max(t2LimEmp, t2LimChi),
+      t2Limit: Math.max(t2LimEmp, t2LimF !== null ? t2LimF : t2LimChi),
+      t2LimitF: t2LimF, t2LimitChi2: t2LimChi,
       speLimit: speLimJM !== null ? Math.max(speLimEmp, speLimJM) : speLimEmp,
       alpha: o.alpha,
       trainT2: t2s, trainSPE: spes,
@@ -273,13 +279,18 @@
     // ridge 정칙화 — 태그 수 대비 샘플이 적거나 상관 높을 때 역행렬 안정화
     const Cinv = inverse(C, 1e-6 * traceMean(C));
     const p = mu.length;
+    const n = Xtrain.length;
     // 학습 데이터 자체의 거리 분포로 기준선 잡기
     const ds = Xtrain.map(row => mahalanobisD(row, mu, Cinv));
+    // 이론 알람한계: D² = T² → Phase II F-한계 (소표본 보정). n이 작으면 χ² 극한 사용.
+    const t2Lim = n > p + 2
+      ? (p * (n - 1) * (n + 1)) / (n * (n - p)) * stats.fInv(0.999, p, n - p)
+      : stats.chi2Inv(0.999, p);
     return {
-      mu, Cinv, p,
+      mu, Cinv, p, n,
       d0: stats.median(ds),
       dWarn: stats.quantile(ds, 0.99),
-      dAlarm: Math.max(stats.quantile(ds, 0.999), Math.sqrt(stats.chi2Inv(0.999, p))),
+      dAlarm: Math.max(stats.quantile(ds, 0.999), Math.sqrt(t2Lim)),
     };
   }
 
@@ -303,16 +314,22 @@
 
   
   // 베이스라인 vs 최근 상관행렬 비교 — "항상 같이 움직이던 관계"가 깨진 쌍을 찾는다
-  // 반환: [{i, j, a: id1, b: id2, base, recent, delta}] |delta| 내림차순
+  // 유의성: Fisher z-변환 (Fisher 1921) — z=atanh(ρ), Var(z)≈1/(n−3).
+  //   짧은 최근창의 표본 요동을 "관계 붕괴"로 오인하지 않도록 |zStat|>1.96 만 sig 표시.
+  // 반환: [{i, j, a: id1, b2: id2, base, recent, delta, zStat, sig}] |delta| 내림차순
   function corrShiftPairs(Xbase, Xrecent, ids, topK) {
     const Rb = corrMatrix(Xbase);
     const Rr = corrMatrix(Xrecent);
+    const nb = Xbase.length, nr = Xrecent.length;
+    const se = Math.sqrt(1 / Math.max(nb - 3, 1) + 1 / Math.max(nr - 3, 1));
+    const zOf = r => Math.atanh(Math.max(-0.999999, Math.min(0.999999, r)));
     const out = [];
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
         const b = Rb[i][j], r = Rr[i][j];
         if (!isFinite(b) || !isFinite(r)) continue;
-        out.push({ i, j, a: ids[i], b2: ids[j], base: b, recent: r, delta: r - b });
+        const zStat = (zOf(r) - zOf(b)) / se;
+        out.push({ i, j, a: ids[i], b2: ids[j], base: b, recent: r, delta: r - b, zStat, sig: Math.abs(zStat) > 1.96 });
       }
     }
     out.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));

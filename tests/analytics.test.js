@@ -731,6 +731,106 @@ t('트레인/인터록 편집 헬퍼 — upsert/remove', () => {
   assert(ontology.removeGroup(m, 'GRP-T'));
 });
 
+console.log('== 통계 정밀화 (F-분포 · 불확실성 구간 · ECOD 완전판 · NaN 강건) ==');
+t('F 분위수 — 표준 통계표 값 재현 + 대칭성', () => {
+  assert(near(stats.fInv(0.95, 2, 10), 4.103, 0.02), `F95(2,10)=${stats.fInv(0.95, 2, 10)}`);
+  assert(near(stats.fInv(0.95, 5, 20), 2.711, 0.02), `F95(5,20)=${stats.fInv(0.95, 5, 20)}`);
+  assert(near(stats.fInv(0.99, 1, 10), 10.044, 0.05), `F99(1,10)=${stats.fInv(0.99, 1, 10)}`);
+  assert(near(stats.fInv(0.5, 7, 7), 1, 1e-6), 'F 중앙값(동일 자유도)=1');
+  assert(near(stats.betaInc(0.5, 2, 2), 0.5, 1e-9), 'I_0.5(2,2)=0.5');
+});
+t('T² 관리한계 — Phase II F-한계: 소표본에서 χ²보다 큼, 대표본에서 χ² 수렴', () => {
+  const k = 3, alpha = 0.99;
+  const chi = stats.chi2Inv(alpha, k);
+  const fLim = (n) => (k * (n - 1) * (n + 1)) / (n * (n - k)) * stats.fInv(alpha, k, n - k);
+  assert(fLim(60) > chi * 1.05, `소표본(n=60) F-한계 ${fLim(60).toFixed(2)} vs χ² ${chi.toFixed(2)}`);
+  assert(Math.abs(fLim(5000) - chi) / chi < 0.05, `대표본 수렴 ${fLim(5000).toFixed(2)} vs ${chi.toFixed(2)}`);
+});
+t('pcaFit — 소표본 t2Limit이 F-한계 채택 (오탐 억제)', () => {
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(21);
+  const gauss = () => { let u = rng() || 1e-9, v = rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const X = [];
+  for (let i = 0; i < 80; i++) { const b = gauss(); X.push([b + 0.2 * gauss(), b + 0.2 * gauss(), gauss(), gauss()]); }
+  const m = mv.pcaFit(X, { alpha: 0.99 });
+  assert(m.t2LimitF !== null && m.t2Limit >= m.t2LimitF - 1e-9, 'F-한계 반영');
+  assert(m.t2LimitF > m.t2LimitChi2, `F ${m.t2LimitF.toFixed(2)} > χ² ${m.t2LimitChi2.toFixed(2)}`);
+});
+t('linreg — 기울기 표준오차: 참값이 slope±3SE 안에', () => {
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(31);
+  const xs = [], ys = [];
+  for (let i = 0; i < 100; i++) { xs.push(i); ys.push(2 * i + 10 + (rng() - 0.5) * 4); }
+  const r = stats.linreg(xs, ys);
+  assert(r.seSlope !== null && r.seSlope > 0, 'SE 존재');
+  assert(Math.abs(r.slope - 2) < 3 * r.seSlope, `slope=${r.slope.toFixed(3)} se=${r.seSlope.toFixed(4)}`);
+});
+t('ECOD 완전판 — 왜도 반대쪽 꼬리 이상도 검출 (O_left/O_right/O_auto의 max)', () => {
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(41);
+  const X = [];
+  for (let i = 0; i < 400; i++) X.push([Math.exp(rng() * 2), Math.exp(rng() * 2), Math.exp(rng() * 2)]); // 우왜 분포
+  X.push([-50, -50, -50]); // 좌측 극단 — 왜도 방향(우꼬리)만 보는 간이형은 점수 0으로 놓침
+  const res = adv.ecod(X);
+  const mean = res.scores.slice(0, 400).reduce((a, b) => a + b, 0) / 400;
+  assert(res.scores[400] > mean * 2.5, `좌측 극단 ${res.scores[400].toFixed(2)} vs 평균 ${mean.toFixed(2)}`);
+});
+t('Matrix Profile — 상수 부분수열 관례 (한쪽 상수 → √m, stumpy와 동일)', () => {
+  const mWin = 10;
+  const ts = [];
+  for (let i = 0; i < 200; i++) ts.push(i >= 100 && i < 115 ? 5 : Math.sin(i * 0.7) + Math.sin(i * 0.23));
+  const r = adv.matrixProfile(ts, mWin, { topK: 1 });
+  assert(r, 'MP 계산');
+  assert(near(r.mp[102], Math.sqrt(mWin), 1e-6), `상수창 MP=${r.mp[102]} (기대 √${mWin}=${Math.sqrt(mWin).toFixed(4)})`);
+});
+t('NaN 강건 — 불량 표본 오염에도 진단 생존, 고장모드 유지', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 'p101a_bearing', startFrac: 0.45, endFrac: 1.35 },
+  ] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'P-101A');
+  const dirty = {};
+  for (const [id, sr] of Object.entries(s.series)) dirty[id] = { t: sr.t.slice(), v: sr.v.slice() };
+  const analogId = a.tags.find(t2 => t2.kind !== 'digital').id;
+  const vt = dirty['VT-105'] || dirty[analogId];
+  for (let i = 3; i < vt.v.length; i += 15) vt.v[i] = NaN; // ~7% 오염 (품질코드 불량 근사)
+  const an = equip.analyzeAsset(a, dirty, { recentHours: 24 });
+  assert(an.ok, an.reason);
+  assert(an.candidates.length && an.candidates[0].mode.id === 'CP-BRG', `1위=${an.candidates[0] && an.candidates[0].mode.id}`);
+  const h = health.computeHealth(an);
+  assert(h.score !== null && isFinite(h.score), `score=${h.score}`);
+});
+t('지수 열화 RUL 신뢰구간 — early ≤ 중앙 ≤ late, 전부 미래', () => {
+  const t0 = 1751000000000;
+  const rng = (s => () => (s = (s * 48271) % 2147483647) / 2147483647)(51);
+  const ts = [], ys = [];
+  for (let i = 0; i < 120; i++) { ts.push(t0 + i * 3600000); ys.push(50 + 2 * Math.exp(0.025 * i) + (rng() - 0.5) * 0.8); }
+  const fit = adv.expDegradationFit(ts, ys);
+  assert(fit && fit.betaSe !== null && fit.betaSe > 0, 'βSE 존재');
+  const ci = fit.timeToThresholdCI(90, 0.9);
+  assert(ci && ci.early !== null && ci.late !== null, JSON.stringify(ci));
+  assert(ci.early <= ci.t && ci.t <= ci.late, '구간이 중앙 추정 포함');
+  assert(ci.early >= ts[119], '이른 도달도 마지막 관측 이후');
+});
+t('인터록 TTA 불확실성 — lo ≤ 중앙 ≤ hi', () => {
+  const t0 = 1751846400000, n = 600, dt = 5 * 60000;
+  const ts = Array.from({ length: n }, (_, i) => t0 + i * dt);
+  const vs = ts.map((_, i) => {
+    const frac = i / (n - 1);
+    return frac < 0.6 ? 50 + Math.sin(i / 7) : 50 + (frac - 0.6) / 0.4 * 45 + Math.sin(i / 7);
+  });
+  const r = interlock.assessCondition({ tagId: 'X', op: '>=', limit: 100 }, { t: ts, v: vs });
+  assert(r.ttaHours !== null && r.ttaLoHours !== null, JSON.stringify({ tta: r.ttaHours, lo: r.ttaLoHours }));
+  assert(r.ttaLoHours <= r.ttaHours + 1e-9, 'lo ≤ 중앙');
+  if (r.ttaHiHours !== null) assert(r.ttaHours <= r.ttaHiHours + 1e-9, '중앙 ≤ hi');
+});
+t('상관 변화 유의성 — 진짜 붕괴 쌍은 Fisher z 유의', () => {
+  const Xb = [], Xr = [];
+  let s = 7; const rng = () => (s = (s * 48271) % 2147483647) / 2147483647;
+  for (let i = 0; i < 200; i++) { const b = rng(); Xb.push([b, b + 0.05 * rng(), rng()]); }
+  for (let i = 0; i < 200; i++) Xr.push([rng(), rng(), rng()]);
+  const pairs = mv.corrShiftPairs(Xb, Xr, ['A', 'B', 'C'], 3);
+  const ab = pairs.find(p => p.a === 'A' && p.b2 === 'B');
+  assert(ab && ab.sig && Math.abs(ab.zStat) > 3, JSON.stringify(ab));
+});
+
 Promise.allSettled(pending).then(() => {
   console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
   process.exit(fail ? 1 : 0);

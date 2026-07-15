@@ -42,12 +42,22 @@
     const violated = remain <= 0;
 
     // 추세 기반 도달 예상 (접근 방향일 때만, R² 최소 요건)
+    // 불확실성: 기울기 표준오차(OLS) 90% 구간 → 도달시간 범위 [ttaLoHours(빠른 접근), ttaHiHours(느린 접근)]
     const tr = stats.trendPerHour(recT, recV);
-    let ttaHours = null;
+    let ttaHours = null, ttaLoHours = null, ttaHiHours = null;
     const approaching = hi ? tr.slopePerHour > 1e-9 : tr.slopePerHour < -1e-9;
     if (!violated && approaching && tr.r2 > 0.35) {
       ttaHours = Math.abs(remain / tr.slopePerHour);
       if (!isFinite(ttaHours) || ttaHours > 24 * 60) ttaHours = null; // 60일 초과는 무의미
+      if (ttaHours !== null && tr.sePerHour !== null) {
+        const z = 1.645; // 90%
+        const sAbs = Math.abs(tr.slopePerHour);
+        const sFast = sAbs + z * tr.sePerHour;
+        const sSlow = sAbs - z * tr.sePerHour;
+        ttaLoHours = sFast > 1e-12 ? Math.abs(remain) / sFast : null;
+        ttaHiHours = sSlow > 1e-12 ? Math.abs(remain) / sSlow : null; // 기울기 하한 ≤ 0 → 상한 없음
+        if (ttaHiHours !== null && ttaHiHours > 24 * 60) ttaHiHours = null;
+      }
     }
 
     // 추세(tta) 기반 격상은 여유가 실제로 소모된 경우에만 — 정상 일교차/부하 추세 오탐 차단
@@ -58,7 +68,7 @@
 
     return {
       tagId: cond.tagId, op: hi ? '>=' : '<=', limit, last, baseMed,
-      marginPct, ttaHours, slopePerHour: tr.slopePerHour, trendR2: tr.r2,
+      marginPct, ttaHours, ttaLoHours, ttaHiHours, slopePerHour: tr.slopePerHour, trendR2: tr.r2,
       status, ok: true,
     };
   }

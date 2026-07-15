@@ -16,11 +16,32 @@
   const clamp01 = x => Math.max(0, Math.min(1, x));
 
   // ---------- 시계열 정렬 ----------
+  // 비유한값(NaN/Inf — 히스토리안 품질코드 불량 구간) 제거. 오염 없으면 원본 그대로 반환.
+  function cleanSeries(s) {
+    let dirty = false;
+    for (let i = 0; i < s.t.length; i++) {
+      if (!Number.isFinite(s.t[i]) || !Number.isFinite(s.v[i])) { dirty = true; break; }
+    }
+    if (!dirty) return s;
+    const t = [], v = [];
+    for (let i = 0; i < s.t.length; i++) {
+      if (Number.isFinite(s.t[i]) && Number.isFinite(s.v[i])) { t.push(s.t[i]); v.push(s.v[i]); }
+    }
+    return { t, v };
+  }
+
   // 서로 다른 타임스탬프의 시리즈들을 공통 그리드로 선형보간 정렬
+  // NaN 강건: 실데이터의 불량 표본이 보간을 오염시켜 태그 전체 진단을 무너뜨리지 않도록
+  // 정렬 전에 태그별로 비유한값을 걷어낸다 (quality.js가 경고, 여기서는 생존).
   function alignSeries(seriesMap, tagIds) {
     const ids = tagIds || Object.keys(seriesMap);
-    const valid = ids.filter(id => seriesMap[id] && seriesMap[id].t.length > 1);
+    const cleaned = {};
+    for (const id of ids) {
+      if (seriesMap[id] && seriesMap[id].t) cleaned[id] = cleanSeries(seriesMap[id]);
+    }
+    const valid = ids.filter(id => cleaned[id] && cleaned[id].t.length > 1);
     if (!valid.length) return { t: [], cols: {}, ids: [] };
+    seriesMap = cleaned;
     let t0 = -Infinity, t1 = Infinity, dts = [];
     for (const id of valid) {
       const s = seriesMap[id];
@@ -453,7 +474,14 @@
       const recStartMs = s.t[n - 1] - recentHours * 3600000;
       // 베이스라인은 아날로그와 동일하게 히스토리 앞 40% (진행 중인 고장이 기준을 오염시키지 않게)
       const baseEndMs = s.t[0] + (s.t[n - 1] - s.t[0]) * 0.4;
-      const b = s.v.map(x => (x >= 0.5 ? 1 : 0));
+      // 불량 표본(NaN)은 직전 상태 유지 — NaN이 0으로 읽혀 트립 해제/에지로 오인되는 것 방지
+      const b = new Array(n);
+      let prevBit = 0;
+      for (let i = 0; i < n; i++) {
+        const x = s.v[i];
+        if (Number.isFinite(x)) prevBit = x >= 0.5 ? 1 : 0;
+        b[i] = prevBit;
+      }
       let recEdges = 0, baseEdges = 0, lastChange = null, recOn = 0, recN = 0;
       let recStarts = 0, baseStarts = 0; // 상승 에지(0→1) = 기동/발생 횟수 (66 사상)
       const baseHours = Math.max((baseEndMs - s.t[0]) / 3600000, 0.5);
@@ -648,10 +676,15 @@
           const fit = adv.expDegradationFit(aligned.t.slice(from), col.slice(from));
           if (fit && fit.beta > 0 && fit.r2 > 0.2) {
             const hitMs = fit.timeToThreshold(bestTag.hi);
+            const ci = fit.timeToThresholdCI(bestTag.hi, 0.9); // 90% 신뢰구간
+            const tEnd = aligned.t[n - 1];
             rul = {
               tagId: bestTag.id, threshold: bestTag.hi, r2: +fit.r2.toFixed(2),
               beta: fit.beta, reachAt: hitMs,
-              hoursLeft: hitMs ? (hitMs - aligned.t[n - 1]) / 3600000 : null,
+              hoursLeft: hitMs ? (hitMs - tEnd) / 3600000 : null,
+              // 불확실성 구간 (β 표준오차 기반) — 정비 일정은 hoursLeftLo(비관) 기준 권장
+              hoursLeftLo: ci && ci.early ? (ci.early - tEnd) / 3600000 : null,
+              hoursLeftHi: ci && ci.late ? (ci.late - tEnd) / 3600000 : null,
             };
           }
         }
@@ -666,5 +699,5 @@
     };
   }
 
-  return { alignSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis, instrumentHealth, digitalDiagnostics };
+  return { alignSeries, cleanSeries, interp, detectPatterns, derivedSeries, analyzeAsset, advancedAnalysis, instrumentHealth, digitalDiagnostics };
 });

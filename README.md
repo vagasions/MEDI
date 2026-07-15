@@ -7,7 +7,8 @@
 - **의존성 0** — 빌드 없음, CDN 없음. `index.html`을 브라우저로 열면 끝 (공장 내부망 PC OK)
 - **dataPARC 연동** — REST / OPC UA / PARCdata SQL / CSV 4가지 경로 지원 (게이트웨이 포함)
 - **석유화학 설비 12종 커버** — 펌프·원심/왕복동 압축기·열교환기·냉각탑·제어밸브·증류탑·분해로·전동기·인버터(VFD)·변압기, 설비별 물리 지표 + ISO 14224 고장모드 라이브러리
-- **논문 검증 기법 탑재** — Matrix Profile(ICDM 2016)·Isolation Forest(ICDM 2008)·ECOD(TKDE 2022)·PELT(JASA 2012)·지수 열화 RUL(Gebraeel 2005)
+- **논문 검증 기법 탑재** — Matrix Profile(ICDM 2016)·Isolation Forest(ICDM 2008)·ECOD(TKDE 2022, Algorithm 1 완전판)·PELT(JASA 2012)·지수 열화 RUL(Gebraeel 2005)
+- **통계 정밀화** — T²/Mahalanobis 관리한계는 Phase II F-분포 정확식(Tracy·Young·Mason 1992, 소표본 오탐 억제), RUL·인터록 도달예상은 90% 신뢰구간 동반, 상관 변화는 Fisher z 유의성 검정, NaN(품질코드 불량) 강건 파이프라인
 
 ## 빠른 시작
 

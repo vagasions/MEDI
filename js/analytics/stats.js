@@ -81,32 +81,35 @@
   }
 
   // ---------- 선형 회귀 / 추세 ----------
+  // seSlope: 기울기 표준오차 (OLS) — 추세 기반 도달예상(RUL/TTA)의 불확실성 정량화에 사용
   function linreg(xs, ys) {
     const n = Math.min(xs.length, ys.length);
-    if (n < 2) return { slope: 0, intercept: ys[0] || 0, r2: 0 };
+    if (n < 2) return { slope: 0, intercept: ys[0] || 0, r2: 0, seSlope: null, n };
     let sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
     for (let i = 0; i < n; i++) {
       sx += xs[i]; sy += ys[i];
       sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; syy += ys[i] * ys[i];
     }
     const den = n * sxx - sx * sx;
-    if (den === 0) return { slope: 0, intercept: sy / n, r2: 0 };
+    if (den === 0) return { slope: 0, intercept: sy / n, r2: 0, seSlope: null, n };
     const slope = (n * sxy - sx * sy) / den;
     const intercept = (sy - slope * sx) / n;
     const ssTot = syy - sy * sy / n;
     let ssRes = 0;
     for (let i = 0; i < n; i++) { const e = ys[i] - (slope * xs[i] + intercept); ssRes += e * e; }
     const r2 = ssTot > 0 ? Math.max(0, 1 - ssRes / ssTot) : 0;
-    return { slope, intercept, r2 };
+    const sxxC = sxx - sx * sx / n;
+    const seSlope = n > 2 && sxxC > 0 ? Math.sqrt((ssRes / (n - 2)) / sxxC) : null;
+    return { slope, intercept, r2, seSlope, n };
   }
 
-  // 시계열 [{t(ms), v}] 구간 추세: 시간당 변화율(slope/hr)
+  // 시계열 [{t(ms), v}] 구간 추세: 시간당 변화율(slope/hr) + 표준오차
   function trendPerHour(times, values) {
-    if (times.length < 3) return { slopePerHour: 0, r2: 0 };
+    if (times.length < 3) return { slopePerHour: 0, r2: 0, sePerHour: null };
     const t0 = times[0];
     const hx = times.map(t => (t - t0) / 3600000);
     const r = linreg(hx, values);
-    return { slopePerHour: r.slope, r2: r.r2 };
+    return { slopePerHour: r.slope, r2: r.r2, sePerHour: r.seSlope };
   }
 
   // ---------- EWMA 관리도 ----------
@@ -260,11 +263,78 @@
     return k * t * t * t;
   }
 
+  // ---------- F 분포 (Hotelling T² Phase II 관리한계용) ----------
+  // 로그감마 — Lanczos 근사 (g=7, 상대오차 ~1e-13)
+  function logGamma(x) {
+    const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313,
+      -176.61502916214059, 12.507343278686905, -0.13857109526572012,
+      9.9843695780195716e-6, 1.5056327351493116e-7];
+    if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+    x -= 1;
+    let a = 0.99999999999980993;
+    const t = x + 7.5;
+    for (let i = 0; i < 8; i++) a += g[i] / (x + i + 1);
+    return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+  }
+
+  // 연분수 (수치해석 표준 Lentz 전개) — betaInc 내부용
+  function betacf(x, a, b) {
+    const MAXIT = 200, EPS = 3e-14, FPMIN = 1e-300;
+    const qab = a + b, qap = a + 1, qam = a - 1;
+    let c = 1, d = 1 - qab * x / qap;
+    if (Math.abs(d) < FPMIN) d = FPMIN;
+    d = 1 / d;
+    let h = d;
+    for (let m = 1; m <= MAXIT; m++) {
+      const m2 = 2 * m;
+      let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+      c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+      d = 1 / d; h *= d * c;
+      aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+      c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+      d = 1 / d; const del = d * c; h *= del;
+      if (Math.abs(del - 1) < EPS) break;
+    }
+    return h;
+  }
+
+  // 정칙화 불완전 베타 I_x(a,b)
+  function betaInc(x, a, b) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    const bt = Math.exp(logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+    return x < (a + 1) / (a + b + 2) ? bt * betacf(x, a, b) / a : 1 - bt * betacf(1 - x, b, a) / b;
+  }
+
+  // F 누적분포: P(F ≤ f) = I_{d1·f/(d1·f+d2)}(d1/2, d2/2)
+  function fCdf(f, d1, d2) {
+    if (f <= 0) return 0;
+    const x = (d1 * f) / (d1 * f + d2);
+    return betaInc(x, d1 / 2, d2 / 2);
+  }
+
+  // F 분위수 — CDF 이분법 역산 (관리한계 계산 시 1회 호출이라 성능 문제 없음)
+  function fInv(p, d1, d2) {
+    if (p <= 0) return 0;
+    if (p >= 1) return Infinity;
+    let hi = 1;
+    while (fCdf(hi, d1, d2) < p && hi < 1e12) hi *= 2;
+    let lo = 0;
+    for (let i = 0; i < 120; i++) {
+      const mid = (lo + hi) / 2;
+      if (fCdf(mid, d1, d2) < p) lo = mid; else hi = mid;
+    }
+    return (lo + hi) / 2;
+  }
+
   return {
     mean, std, quantile, median, robustStd, histogram,
     rollingMeanStd, linreg, trendPerHour,
     ewmaChart, cusumChart, runRules,
     persistent, hysteresis,
     normInv, chi2Inv,
+    logGamma, betaInc, fCdf, fInv,
   };
 });

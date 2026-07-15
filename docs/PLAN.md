@@ -79,9 +79,14 @@ dataPARC(Capstone Technology)가 공식 제공하는 외부 접근 수단과 권
 
 ### 3.2 다변량 — `js/analytics/multivariate.js` (복합 신호 분석의 핵심)
 - **PCA + Hotelling T²**: 정상운전 학습 → 운전점이 정상영역을 벗어나는지.
+  관리한계는 **Phase II(새 관측) F-분포 정확식** `k(n−1)(n+1)/(n(n−k))·F_α(k, n−k)`
+  (Tracy·Young·Mason 1992, *J. Quality Technology* / Jackson 1991) — χ² 근사는 n→∞ 극한이라
+  베이스라인이 짧을수록 한계를 과소평가해 오탐을 만들기 때문. 경험적 분위수와의 max 채택.
 - **SPE/Q**: 신호 간 **상관구조 붕괴** 검출 — *개별 태그가 전부 정상범위여도* 관계가 깨지면 경보. 관리한계는 Jackson–Mudholkar + 경험적 분위수 중 보수적인 값.
 - **기여도 분해**: 알람 시 어느 태그가 원인인지 상위 기여 태그 지목.
-- **Mahalanobis 거리**: 설비 전체 신호를 한 점수로 — 건강지수의 근간.
+- **Mahalanobis 거리**: 설비 전체 신호를 한 점수로 — 건강지수의 근간. 알람한계도 동일한 F-한계 적용.
+- **상관 변화 유의성**: 베이스라인↔최근 상관 변화에 **Fisher z-검정**(Fisher 1921, Var(z)≈1/(n−3))을
+  붙여, 짧은 창의 표본 요동을 "관계 붕괴"로 오인하지 않도록 유의/비유의를 구분 표시.
 
 ### 3.3 설비별 물리 파생지표 — `js/analytics/equipment.js`
 
@@ -126,11 +131,11 @@ LOF·BOCPD·Spectral Residual 등은 오탐/파라미터 민감성으로 제외)
 
 | 기법 | 논문 | 구현 | 오탐 방지 장치 |
 |---|---|---|---|
-| Matrix Profile (STOMP) | Yeh et al. & Zhu et al., ICDM 2016 | QT 점화식 O(n²) 정확계산, 디스코드 top-K | 이상점수 최상위 태그에만 적용(m≈2h) |
+| Matrix Profile (STOMP) | Yeh et al. & Zhu et al., ICDM 2016 | QT 점화식 O(n²) 정확계산, 디스코드 top-K. 상수 부분수열 관례는 레퍼런스 구현(stumpy)과 동일: 둘 다 상수→0, 한쪽만 상수→√m | 이상점수 최상위 태그에만 적용(m≈2h) |
 | Isolation Forest | Liu et al., ICDM 2008 (인용 5,500+) | ψ=256, 트리 100, 시드 고정 | **정상 베이스라인 구간으로만 학습**(trainRange) |
-| ECOD | Li et al., IEEE TKDE 2022 | 왜도 방향 ECDF 꼬리확률 합 | 파라미터 0개 — 튜닝 오류 원천 차단 |
+| ECOD | Li et al., IEEE TKDE 2022 | **논문 Algorithm 1 완전판** — 좌/우/왜도자동 세 집계의 max(왜도 반대쪽 꼬리 이상도 검출), 동률 정확 ECDF | 파라미터 0개 — 튜닝 오류 원천 차단 |
 | PELT 변화점 | Killick et al., JASA 2012 | 평균+분산 정규비용 len·log(v̂), BIC 페널티 | 스무딩+데시메이션 후 적용, 사후 평균>사전+2σ 검증 |
-| 지수 열화 RUL | Gebraeel et al., IIE Trans. 2005 | φ 그리드 + 로그선형화 적합 | PELT 온셋 이후 구간만, R² 낮으면 미표시 |
+| 지수 열화 RUL | Gebraeel et al., IIE Trans. 2005 | φ 그리드 + 로그선형화 적합. **도달시각 90% 신뢰구간**(β 표준오차 1차 근사) 동반 표시 | PELT 온셋 이후 구간만, R² 낮으면 미표시. 단일값 과신 방지: 정비 일정은 구간 하한 기준 권장 |
 
 **합의(consensus) 원칙**: iForest·ECOD가 모두 최근 구간 이상 판정 + 다른 근거(SPE 위반 또는 고장모드 일치)가
 있을 때만 건강지수 감점. UI의 "열화 시작(PELT)" 표시도 동일 조건으로 게이팅 — 단일 알고리즘 오탐이
@@ -230,7 +235,8 @@ iForest=스무고개 고립, SPE=키-몸무게 관계 붕괴, 86 트립=자물�
 ### 3.13 트레인/인터록 종합 감시 (`js/analytics/interlock.js` + 온톨로지 groups/interlocks)
 
 - 인터록 평가: 여유% = (설정치−현재)/(설정치−베이스라인 중앙값), 도달예상 = 최근 24h 선형추세
-  외삽(R²>0.35 + 여유 소모 게이트 — 일교차/부하 추세 오탐 차단). 상태 ok/approach/near/violated
+  외삽(R²>0.35 + 여유 소모 게이트 — 일교차/부하 추세 오탐 차단). 도달예상은 기울기 표준오차
+  기반 **90% 범위(빠름~느림)** 를 함께 표시 — 단일 시점 예측의 과신 방지. 상태 ok/approach/near/violated
   → 알람 중간/높음/긴급. 사용자 정의(설비·태그·연산자·설정치·영향) 온톨로지 저장(version 6).
 - 트레인(대표설비): members 건강 롤업(병목 강조), 열화 전파 순서(검출기 합의된 PELT 온셋 시간순 —
   원인 후보 지목), 구성 설비 대표 태그 간 상관 히트맵. 화면 편집 가능.

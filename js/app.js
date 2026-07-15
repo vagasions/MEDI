@@ -57,6 +57,9 @@
     const p = x => String(x).padStart(2, '0');
     return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
+  function fmtHrs(h) {
+    return h < 48 ? h.toFixed(0) + 'h' : (h / 24).toFixed(1) + 'd';
+  }
 
   // 간이 마크다운 렌더러 (리포트 표시용 — 신뢰된 내부 생성 텍스트 전용)
   function md2html(src) {
@@ -689,7 +692,11 @@
       if (adv.onset && corroborated) facts.push(`<span class="tag-chip on" style="cursor:default">열화 시작(PELT): ${fmtTimeShort(adv.onset.t)}</span>`);
       if (adv.rul && adv.rul.hoursLeft !== null) {
         const h = adv.rul.hoursLeft;
-        facts.push(`<span class="tag-chip on" style="cursor:default;color:var(--warn);border-color:var(--warn)">RUL 근사: ${adv.rul.tagId} 상한 도달 ~${h < 48 ? h.toFixed(0) + '시간' : (h / 24).toFixed(1) + '일'} 후 (R²=${adv.rul.r2})</span>`);
+        const fmtH = x => (x < 48 ? x.toFixed(0) + '시간' : (x / 24).toFixed(1) + '일');
+        const range = adv.rul.hoursLeftLo !== null
+          ? ` · 90% 구간 ${fmtH(Math.max(adv.rul.hoursLeftLo, 0))}~${adv.rul.hoursLeftHi !== null ? fmtH(adv.rul.hoursLeftHi) : '그 이상'}`
+          : '';
+        facts.push(`<span class="tag-chip on" style="cursor:default;color:var(--warn);border-color:var(--warn)">RUL 근사: ${adv.rul.tagId} 상한 도달 ~${fmtH(h)} 후 (R²=${adv.rul.r2}${range})</span>`);
       }
       $('#adv-facts').innerHTML = facts.join(' ');
 
@@ -754,11 +761,12 @@
       const pairs = mv.corrShiftPairs(Xb, Xr, aligned.ids, 5);
       if (!pairs.length) { el.innerHTML = '<div class="faint">상관 계산 불가.</div>'; return; }
       el.innerHTML = '';
-      $('#cs-table').innerHTML = `<table class="data"><thead><tr><th>신호쌍</th><th>정상 ρ</th><th>최근 ρ</th><th>변화</th></tr></thead><tbody>${
+      $('#cs-table').innerHTML = `<table class="data"><thead><tr><th>신호쌍</th><th>정상 ρ</th><th>최근 ρ</th><th>변화</th><th>유의성</th></tr></thead><tbody>${
         pairs.map((p, i) => `<tr style="${i === 0 ? 'font-weight:700' : ''}"><td><code>${esc(p.a)}</code>↔<code>${esc(p.b2)}</code></td>
           <td>${p.base.toFixed(2)}</td><td>${p.recent.toFixed(2)}</td>
-          <td style="color:${Math.abs(p.delta) > 0.4 ? 'var(--warn)' : 'inherit'}">${p.delta > 0 ? '+' : ''}${p.delta.toFixed(2)}${Math.abs(p.delta) > 0.4 ? ' ⚠' : ''}</td></tr>`).join('')
-      }</tbody></table><div class="faint" style="margin-top:4px">|변화| 0.4 초과는 관계 이동으로 볼 만합니다 (굵은 행이 산점도에 표시됨)</div>`;
+          <td style="color:${Math.abs(p.delta) > 0.4 && p.sig ? 'var(--warn)' : 'inherit'}">${p.delta > 0 ? '+' : ''}${p.delta.toFixed(2)}${Math.abs(p.delta) > 0.4 && p.sig ? ' ⚠' : ''}</td>
+          <td class="${p.sig ? '' : 'faint'}">${p.sig ? `유의 (z=${Math.abs(p.zStat).toFixed(1)})` : '표본 요동 범위'}</td></tr>`).join('')
+      }</tbody></table><div class="faint" style="margin-top:4px">|변화| 0.4 초과 + 통계적 유의(Fisher z, 95%)면 관계 이동으로 볼 만합니다 (굵은 행이 산점도에 표시됨). "표본 요동 범위"는 창 길이 대비 우연 변동일 수 있어 참고만 하세요.</div>`;
       const top = pairs[0];
       $('#cs-title').textContent = `${top.a} ↔ ${top.b2} (회색=정상, 주황=최근)`;
       const ia = aligned.ids.indexOf(top.a), ib = aligned.ids.indexOf(top.b2);
@@ -914,7 +922,7 @@
           <div style="margin:8px 0">
             <div style="display:flex;justify-content:space-between;font-size:12.5px">
               <span><code>${esc(c.tagId)}</code> ${esc(c.op)} ${c.limit}</span>
-              <span>현재 ${health.fmt(c.last)} · 여유 <strong>${c.marginPct.toFixed(0)}%</strong>${c.ttaHours ? ` · 도달 ~${c.ttaHours < 48 ? c.ttaHours.toFixed(0) + 'h' : (c.ttaHours / 24).toFixed(1) + 'd'}` : ''}</span>
+              <span>현재 ${health.fmt(c.last)} · 여유 <strong>${c.marginPct.toFixed(0)}%</strong>${c.ttaHours ? ` · 도달 ~${fmtHrs(c.ttaHours)}${c.ttaLoHours !== null && c.ttaLoHours !== undefined ? ` (90% ${fmtHrs(c.ttaLoHours)}~${c.ttaHiHours !== null && c.ttaHiHours !== undefined ? fmtHrs(c.ttaHiHours) : '그 이상'})` : ''}` : ''}</span>
             </div>
             <div class="il-bar"><div class="il-fill" style="width:${pct}%;background:${barColor}"></div></div>
           </div>`;

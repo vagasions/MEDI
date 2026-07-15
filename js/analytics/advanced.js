@@ -76,8 +76,9 @@
     const CONST_EPS = 1e-10;
     function distFromQT(qt, i, j) {
       // z-정규화 거리: d² = 2m(1 - (qt - m·μi·μj)/(m·σi·σj))
+      // 상수 부분수열 관례(레퍼런스 구현 stumpy와 동일): 둘 다 상수 → 0, 한쪽만 상수 → √m
       const denom = m * sig[i] * sig[j];
-      if (denom < CONST_EPS) return (sig[i] < CONST_EPS && sig[j] < CONST_EPS) ? 0 : Math.sqrt(2 * m);
+      if (denom < CONST_EPS) return (sig[i] < CONST_EPS && sig[j] < CONST_EPS) ? 0 : Math.sqrt(m);
       let corr = (qt - m * mu[i] * mu[j]) / denom;
       if (corr > 1) corr = 1;
       if (corr < -1) corr = -1;
@@ -337,34 +338,44 @@
 
   // ==========================================================
   // 4b) ECOD (Li et al., IEEE TKDE 2022) — 무파라미터 다변량 이상탐지
-  //     차원별 경험적 CDF 꼬리확률의 합. O(nd·logn), 보정: 왜도 방향 선택.
+  //     논문 Algorithm 1 완전판: 차원별 좌/우 꼬리 −log ECDF를 세 방식으로 집계 후 최댓값.
+  //       O_left  = Σ_j −log F̂_left(x_j)          (좌측 꼬리만)
+  //       O_right = Σ_j −log F̂_right(x_j)         (우측 꼬리만)
+  //       O_auto  = Σ_j (왜도 γ_j<0 ? 좌 : 우)     (왜도 방향 자동 선택)
+  //       O(x)    = max{O_left, O_right, O_auto}
+  //     세 집계의 max를 쓰므로 왜도 반대 방향의 꼬리 이상(예: 우왜 분포의 극저값)도 놓치지 않는다.
+  //     ECDF는 좌: P(X≤v)=#{≤v}/n, 우: P(X≥v)=#{≥v}/n (동률 정확 처리). O(nd·logn).
   // ==========================================================
   function ecod(X) {
     const n = X.length;
     if (!n) return { scores: [] };
     const p = X[0].length;
-    const scores = new Array(n).fill(0);
+    const sumL = new Float64Array(n), sumR = new Float64Array(n), sumA = new Float64Array(n);
     for (let j = 0; j < p; j++) {
       const col = X.map(r => r[j]);
       const sorted = col.slice().sort((a, b) => a - b);
-      // 왜도 부호 (어느 꼬리를 쓸지 결정)
+      // 왜도 부호 (O_auto에서 어느 꼬리를 쓸지 결정)
       const mu = col.reduce((a, b) => a + b, 0) / n;
       let m2 = 0, m3 = 0;
       for (const v of col) { const d = v - mu; m2 += d * d; m3 += d * d * d; }
       const skew = m2 > 0 ? (m3 / n) / Math.pow(m2 / n, 1.5) : 0;
       for (let i = 0; i < n; i++) {
-        // ECDF (좌/우 꼬리)
-        let lo = 0, hi = n;
         const v = col[i];
+        // upper_bound: #{≤ v}
+        let lo = 0, hi = n;
         while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] <= v) lo = mid + 1; else hi = mid; }
-        const Fl = Math.max(lo / n, 1 / n);            // P(X<=v)
-        const Fr = Math.max((n - lo + 1) / n, 1 / n);  // P(X>=v) 근사
+        // lower_bound: #{< v}
+        let lo2 = 0, hi2 = n;
+        while (lo2 < hi2) { const mid = (lo2 + hi2) >> 1; if (sorted[mid] < v) lo2 = mid + 1; else hi2 = mid; }
+        const Fl = Math.max(lo / n, 1 / n);        // P(X≤v)
+        const Fr = Math.max((n - lo2) / n, 1 / n); // P(X≥v) — 동률 포함 정확값
         const tailL = -Math.log(Fl), tailR = -Math.log(Fr);
-        // 논문: 왜도 방향 꼬리와 양측 최대 중 큰 값 사용(간이형: 왜도 방향)
-        scores[i] += skew < 0 ? tailL : tailR;
+        sumL[i] += tailL; sumR[i] += tailR;
+        sumA[i] += skew < 0 ? tailL : tailR;
       }
     }
-    for (let i = 0; i < n; i++) scores[i] /= p; // 차원수 정규화
+    const scores = new Array(n);
+    for (let i = 0; i < n; i++) scores[i] = Math.max(sumL[i], sumR[i], sumA[i]) / p; // 차원수 정규화
     return { scores };
   }
 
@@ -402,7 +413,7 @@
         sse += (y[i] - pred) * (y[i] - pred);
       }
       if (!best || sse < best.sse) {
-        best = { phi, theta: Math.exp(r.intercept), beta: r.slope, sse, r2: r.r2 };
+        best = { phi, theta: Math.exp(r.intercept), beta: r.slope, betaSe: r.seSlope, sse, r2: r.r2 };
       }
     }
     if (!best) return null;
@@ -414,6 +425,26 @@
       const hHours = Math.log(d) / best.beta;
       const tMs = t0 + hHours * 3600000;
       return (tMs > t[n - 1] && isFinite(tMs)) ? tMs : null;
+    };
+    // 도달 시각 신뢰구간 — 로그선형 OLS의 β 표준오차 1차 근사(지배항).
+    // "며칠 후 도달" 단일값이 주는 과신을 막기 위한 구간 표시용. conf 기본 0.90.
+    best.timeToThresholdCI = (thr, conf) => {
+      const d = (thr - best.phi) / best.theta;
+      if (d <= 0 || best.beta < 1e-9) return null;
+      const ln = Math.log(d);
+      if (ln <= 0) return null;
+      const toMs = b => t0 + (ln / b) * 3600000;
+      const tC = toMs(best.beta);
+      if (!isFinite(tC) || tC <= t[n - 1]) return null;
+      if (best.betaSe === null || best.betaSe === undefined) return { t: tC, early: null, late: null };
+      const z = stats.normInv(0.5 + (conf || 0.9) / 2);
+      const bHi = best.beta + z * best.betaSe;
+      const bLo = best.beta - z * best.betaSe;
+      return {
+        t: tC,
+        early: bHi > 1e-9 ? Math.max(toMs(bHi), t[n - 1]) : null, // 빠른 열화 가정 → 이른 도달
+        late: bLo > 1e-9 ? toMs(bLo) : null,                      // β 하한 ≤ 0 → 도달 상한 없음
+      };
     };
     return best;
   }
