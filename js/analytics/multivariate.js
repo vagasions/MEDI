@@ -321,15 +321,18 @@
     const Rb = corrMatrix(Xbase);
     const Rr = corrMatrix(Xrecent);
     const nb = Xbase.length, nr = Xrecent.length;
-    const se = Math.sqrt(1 / Math.max(nb - 3, 1) + 1 / Math.max(nr - 3, 1));
+    // n≤3 창은 상관 정보가 0 (n=2의 표본상관은 항상 ±1) — 자유도 바닥값으로 se를 날조하면
+    // 퇴화 상관이 항상 '유의'가 되므로 zStat=null·sig=false로 판정 불가 처리
+    const insufficient = nb <= 3 || nr <= 3;
+    const se = insufficient ? NaN : Math.sqrt(1 / (nb - 3) + 1 / (nr - 3));
     const zOf = r => Math.atanh(Math.max(-0.999999, Math.min(0.999999, r)));
     const out = [];
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
         const b = Rb[i][j], r = Rr[i][j];
         if (!isFinite(b) || !isFinite(r)) continue;
-        const zStat = (zOf(r) - zOf(b)) / se;
-        out.push({ i, j, a: ids[i], b2: ids[j], base: b, recent: r, delta: r - b, zStat, sig: Math.abs(zStat) > 1.96 });
+        const zStat = insufficient ? null : (zOf(r) - zOf(b)) / se;
+        out.push({ i, j, a: ids[i], b2: ids[j], base: b, recent: r, delta: r - b, zStat, sig: zStat !== null && Math.abs(zStat) > 1.96 });
       }
     }
     out.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));

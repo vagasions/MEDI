@@ -60,6 +60,13 @@
       const v = Math.max(0, s2 / m - mu[i] * mu[i]);
       sig[i] = Math.sqrt(v);
     }
+    // 정확한 상수(stuck) 창 판정 — 연속 동일값 런 길이 (stumpy의 isconstant와 동일 접근).
+    // 누적합 기반 σ는 부동소수 상쇄오차로 상수 창에서도 ~1e-6이 나올 수 있어 σ 임계만으로는 놓친다.
+    const runLen = new Int32Array(n);
+    runLen[0] = 1;
+    for (let i = 1; i < n; i++) runLen[i] = ts[i] === ts[i - 1] ? runLen[i - 1] + 1 : 1;
+    const isConst = new Uint8Array(l);
+    for (let i = 0; i < l; i++) isConst[i] = runLen[i + m - 1] >= m ? 1 : 0;
 
     const mp = new Float64Array(l).fill(Infinity);
     const mpIdx = new Int32Array(l).fill(-1);
@@ -76,9 +83,13 @@
     const CONST_EPS = 1e-10;
     function distFromQT(qt, i, j) {
       // z-정규화 거리: d² = 2m(1 - (qt - m·μi·μj)/(m·σi·σj))
-      // 상수 부분수열 관례(레퍼런스 구현 stumpy와 동일): 둘 다 상수 → 0, 한쪽만 상수 → √m
+      // 상수(stuck) 부분수열 처리: 둘 다 상수 → 0, 한쪽만 상수 → Infinity(이웃 후보 제외).
+      // 고정 관례값(√m 등)을 반환하면 MP가 min이라 상수 창 하나가 "모든" 창의 MP를
+      // 그 값으로 캡해 디스코드 순위가 동률 붕괴한다 — 제외가 비상수 창의 진짜 NN 거리를 보존.
+      const ci = isConst[i] === 1, cj = isConst[j] === 1;
+      if (ci || cj) return (ci && cj) ? 0 : Infinity;
       const denom = m * sig[i] * sig[j];
-      if (denom < CONST_EPS) return (sig[i] < CONST_EPS && sig[j] < CONST_EPS) ? 0 : Math.sqrt(m);
+      if (denom < CONST_EPS) return Math.sqrt(2 * m); // 준상수(부동소수 수준 변동) — 상관 0 취급
       let corr = (qt - m * mu[i] * mu[j]) / denom;
       if (corr > 1) corr = 1;
       if (corr < -1) corr = -1;
@@ -101,6 +112,8 @@
     }
 
     // 디스코드: MP가 큰 순서 topK (서로 excl 이상 떨어진 것만)
+    // isFinite 필터가 이웃 없는 상수 창(mp=Infinity)을 후보에서 배제한다 —
+    // 상수 창 자체의 이상은 계기 진단(stuck)이 담당, 디스코드는 형태 이상 전용.
     const order = Array.from({ length: l }, (_, i) => i)
       .filter(i => isFinite(mp[i]))
       .sort((a, b) => mp[b] - mp[a]);
@@ -376,7 +389,17 @@
     }
     const scores = new Array(n);
     for (let i = 0; i < n; i++) scores[i] = Math.max(sumL[i], sumR[i], sumA[i]) / p; // 차원수 정규화
-    return { scores };
+    // channels: 집계 채널별 점수(각 /p). max 점수는 표시용으로는 좋지만, 경험 임계(베이스라인
+    // 분위수) 감시에서는 베이스라인 양쪽 극단점 점수까지 끌어올려 임계를 부풀린다 —
+    // 추세형 열화의 검출률 붕괴를 막으려면 채널별 임계(각자의 베이스라인 분위수)로 감시해야 한다.
+    return {
+      scores,
+      channels: {
+        left: Array.from(sumL, x => x / p),
+        right: Array.from(sumR, x => x / p),
+        auto: Array.from(sumA, x => x / p),
+      },
+    };
   }
 
   // ==========================================================

@@ -58,6 +58,7 @@
     return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
   function fmtHrs(h) {
+    if (h < 1) return Math.max(1, Math.round(h * 60)) + 'm'; // 임박 도달이 '0h'로 뭉개지지 않게 분 단위
     return h < 48 ? h.toFixed(0) + 'h' : (h / 24).toFixed(1) + 'd';
   }
 
@@ -228,7 +229,7 @@
     for (const il of S.ilResults) {
       const w = il.worst;
       const msg = w && w.ok
-        ? `인터록 [${il.name}] ${il.status === 'violated' ? '도달!' : '접근'} — ${w.tagId} ${health.fmt(w.last)} / 설정 ${w.limit} (여유 ${w.marginPct.toFixed(0)}%${w.ttaHours ? `, 현 추세로 ~${w.ttaHours < 48 ? w.ttaHours.toFixed(0) + '시간' : (w.ttaHours / 24).toFixed(1) + '일'} 후 도달` : ''}). 조치: ${il.action || '해당 설비 점검'}`
+        ? `인터록 [${il.name}] ${il.status === 'violated' ? '도달!' : '접근'} — ${w.tagId} ${health.fmt(w.last)} / 설정 ${w.limit} (여유 ${w.marginPct.toFixed(0)}%${w.ttaHours ? `, 현 추세로 ~${fmtHrs(w.ttaHours)} 후 도달` : ''}). 조치: ${il.action || '해당 설비 점검'}`
         : `인터록 [${il.name}] 데이터 없음`;
       conds.push({
         key: `il.${il.id}`,

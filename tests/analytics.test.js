@@ -772,13 +772,32 @@ t('ECOD 완전판 — 왜도 반대쪽 꼬리 이상도 검출 (O_left/O_right/O
   const mean = res.scores.slice(0, 400).reduce((a, b) => a + b, 0) / 400;
   assert(res.scores[400] > mean * 2.5, `좌측 극단 ${res.scores[400].toFixed(2)} vs 평균 ${mean.toFixed(2)}`);
 });
-t('Matrix Profile — 상수 부분수열 관례 (한쪽 상수 → √m, stumpy와 동일)', () => {
+t('Matrix Profile — 상수(stuck) 창 처리: 이웃 후보 제외, 전 창 MP √m 캡 붕괴 방지', () => {
   const mWin = 10;
+  // 사인파 + stuck 평탄 구간 + 비반복 파형 이상(가우시안 범프)
   const ts = [];
-  for (let i = 0; i < 200; i++) ts.push(i >= 100 && i < 115 ? 5 : Math.sin(i * 0.7) + Math.sin(i * 0.23));
-  const r = adv.matrixProfile(ts, mWin, { topK: 1 });
-  assert(r, 'MP 계산');
-  assert(near(r.mp[102], Math.sqrt(mWin), 1e-6), `상수창 MP=${r.mp[102]} (기대 √${mWin}=${Math.sqrt(mWin).toFixed(4)})`);
+  for (let i = 0; i < 400; i++) {
+    let v = Math.sin(i * 0.35) + Math.sin(i * 0.11) * 0.4;
+    if (i >= 100 && i < 160) v = 5;                                        // stuck 평탄
+    if (i >= 300 && i < 310) v += 3 * Math.exp(-((i - 305) ** 2) / 4);     // 형태 이상
+    ts.push(v);
+  }
+  const r = adv.matrixProfile(ts, mWin, { topK: 5 });
+  assert(r && r.discords.length >= 3, 'MP 계산');
+  // 상수 창이 이웃 후보로 참여하면(√m 관례값) 모든 창의 MP가 √m으로 캡되어 상위가 동률 붕괴한다 —
+  // 제외 처리 후에는 순위가 진짜 NN 거리로 구분되어야 함 (동률 캡이면 아래 부등식이 0)
+  assert(r.discords[0].dist > r.discords[1].dist + 1e-6, `동률 붕괴: ${r.discords.map(d => d.dist.toFixed(4))}`);
+  // 완전 상수 창(서로 거리 0)은 디스코드 후보에 오르지 않음, 평탄 내부 mp=0
+  assert(!r.discords.some(d => d.idx >= 100 && d.idx <= 150 - mWin), `평탄 창이 디스코드: ${r.discords.map(d => d.idx)}`);
+  assert(r.mp[120] === 0, `평탄 내부 mp=${r.mp[120]}`);
+  // 진짜 형태 이상(범프)이 상위권 유지 (stuck 진입/이탈 경계 창과 함께)
+  assert(r.discords.some(d => d.idx >= 293 && d.idx <= 312), `범프 미검출: ${r.discords.map(d => d.idx)}`);
+  // 고립 상수 창(주변에 다른 상수 창 없음)은 mp=Infinity로 디스코드에서 제외
+  const ts2 = [];
+  for (let i = 0; i < 200; i++) ts2.push(i >= 100 && i < 112 ? 5 : Math.sin(i * 0.7) + Math.sin(i * 0.23));
+  const r2 = adv.matrixProfile(ts2, mWin, { topK: 3 });
+  assert(!isFinite(r2.mp[101]), `고립 상수창 mp=${r2.mp[101]} (Infinity 기대)`);
+  assert(!r2.discords.some(d => d.idx === 101), '고립 상수창 디스코드 제외');
 });
 t('NaN 강건 — 불량 표본 오염에도 진단 생존, 고장모드 유지', () => {
   const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
@@ -829,6 +848,72 @@ t('상관 변화 유의성 — 진짜 붕괴 쌍은 Fisher z 유의', () => {
   const pairs = mv.corrShiftPairs(Xb, Xr, ['A', 'B', 'C'], 3);
   const ab = pairs.find(p => p.a === 'A' && p.b2 === 'B');
   assert(ab && ab.sig && Math.abs(ab.zStat) > 3, JSON.stringify(ab));
+});
+t('상관 변화 유의성 — n≤3 퇴화 창은 판정 불가 (sig=false, zStat=null)', () => {
+  // n=2의 표본상관은 항상 ±1 — 자유도 바닥값으로 '유의'를 날조하면 안 됨
+  const pairs = mv.corrShiftPairs([[1, 2], [2, 1]], [[1, 1], [2, 2]], ['A', 'B'], 3);
+  assert(pairs.length && pairs[0].zStat === null && pairs[0].sig === false, JSON.stringify(pairs[0]));
+});
+t('ECOD 채널별 임계 — 추세형 열화(T-401 플러딩)의 recentFrac 검출 유지', () => {
+  // max 집계 점수에 단일 임계를 쓰면 베이스라인 극단점이 임계를 부풀려 recentFrac이 0으로 붕괴
+  // → 채널별(좌/우/왜도) 임계로 감시해야 다중검출기 합의(iForest∧ECOD)가 살아있다
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [
+    { id: 't401_flooding', startFrac: 0.45, endFrac: 1.35 },
+  ] });
+  const m = ontology.defaultModel();
+  const an = equip.analyzeAsset(ontology.findAsset(m, 'T-401'), s.series, { recentHours: 24 });
+  assert(an.adv, 'adv 존재');
+  assert(an.adv.ecod.recentFrac > 0.15, `ecod.recentFrac=${an.adv.ecod.recentFrac.toFixed(3)}`);
+  // 정상 설비에서는 오탐하지 않아야 (합의 게이트 0.2 미만)
+  const s2 = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const an2 = equip.analyzeAsset(ontology.findAsset(m, 'T-401'), s2.series, { recentHours: 24 });
+  assert(an2.adv.ecod.recentFrac < 0.2, `정상 ecod.recentFrac=${an2.adv.ecod.recentFrac.toFixed(3)}`);
+});
+t('디지털 선두 NaN — 래치된 1 신호에서 가짜 상승 에지·lastChange 날조 없음', () => {
+  const t0 = 1751846400000 - 300 * 5 * 60000;
+  const ts = Array.from({ length: 300 }, (_, i) => t0 + i * 5 * 60000);
+  const vs = ts.map((_, i) => (i < 250 ? NaN : 1)); // 선두 250개 품질 불량, 이후 래치 1
+  const out = equip.digitalDiagnostics(
+    [{ id: 'XA-T', role: 'trip', desc: '테스트 트립', trip: true }],
+    { 'XA-T': { t: ts, v: vs } }, 24);
+  const d = out['XA-T'];
+  assert(d && d.state === 1, `state=${d && d.state}`);
+  assert(d.edgesRecent === 0 && d.startsRecent === 0, `에지 날조: edges=${d.edgesRecent} starts=${d.startsRecent}`);
+  assert(d.lastChange === null, `lastChange 날조: ${d.lastChange}`);
+  // 전 구간 NaN → 상태 불명, 진단 자체를 생략 (state=0 '정상' 오표시 방지)
+  const out2 = equip.digitalDiagnostics(
+    [{ id: 'XA-N', role: 'trip', desc: '전 구간 불량', trip: true }],
+    { 'XA-N': { t: ts, v: ts.map(() => NaN) } }, 24);
+  assert(!out2['XA-N'], '전 구간 NaN은 진단 생략');
+});
+t('인터록 NaN 강건 — 불량 표본이 있어도 여유/상태/TTA 유지', () => {
+  const t0 = 1751846400000, n = 600, dt = 5 * 60000;
+  const ts = Array.from({ length: n }, (_, i) => t0 + i * dt);
+  const mk = () => ts.map((_, i) => {
+    const frac = i / (n - 1);
+    return frac < 0.6 ? 50 + Math.sin(i / 7) : 50 + (frac - 0.6) / 0.4 * 45 + Math.sin(i / 7);
+  });
+  const vs = mk();
+  vs[n - 1] = NaN; vs[n - 50] = NaN; // 최근창 불량 표본 (마지막 값 포함)
+  const r = interlock.assessCondition({ tagId: 'X', op: '>=', limit: 100 }, { t: ts, v: vs });
+  assert(r.ok && isFinite(r.marginPct), `marginPct=${r.marginPct}`);
+  assert(r.status !== 'ok', `트립 임박인데 status=${r.status}`); // NaN으로 'ok' 강등되면 안전 오표시
+  assert(r.ttaHours !== null, 'TTA 유지');
+});
+t('OV 밸브 NaN 강건 — 리미트 신호 품질 불량이 허위 OV-FTF를 만들지 않음', () => {
+  const s = simulator.makeSim({ days: 7, stepMin: 5, now: 1751846400000, active: [] });
+  const m = ontology.defaultModel();
+  const a = ontology.findAsset(m, 'XV-701');
+  const fbTag = a.tags.find(t2 => t2.role === 'open_fb');
+  const sr = s.series[fbTag.id];
+  const nn = sr.t.length;
+  for (let i = nn - 72; i < nn - 30; i++) sr.v[i] = NaN; // 최근 24h 내 NaN 버스트 (~3.5시간)
+  const an = equip.analyzeAsset(a, s.series, { recentHours: 24 });
+  assert(an.valve && an.valve.recentMismatchFrac < 0.02, `mismatch=${an.valve && an.valve.recentMismatchFrac}`);
+  assert(!(an.candidates[0] && an.candidates[0].mode.id === 'OV-FTF' && an.candidates[0].score > 0.3),
+    `허위 OV-FTF: ${JSON.stringify(an.candidates[0] && { id: an.candidates[0].mode.id, s: an.candidates[0].score })}`);
+  const h = health.computeHealth(an);
+  assert(h.score >= 85, `score=${h.score}`);
 });
 
 Promise.allSettled(pending).then(() => {

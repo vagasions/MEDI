@@ -169,6 +169,11 @@
     let mism = 0, mismN = 0, recMism = 0, recMismN = 0;
     const tEnd = cmd.t[n - 1];
     for (let i = 1; i < n; i++) {
+      // 품질 불량(NaN) 표본은 판정 제외 — bin이 NaN을 0(닫힘)으로 읽어
+      // ESD 밸브에 허위 fail-to-function(OV-FTF)을 만드는 것 방지.
+      // 시리즈별 개별 필터는 금물: 인덱스 정렬(같은 그리드) 가정이 깨진다.
+      if (!Number.isFinite(cmd.v[i]) || !Number.isFinite(cmd.v[i - 1]) || !Number.isFinite(openFb.v[i]) ||
+          (closedFb && !Number.isFinite(closedFb.v[i]))) continue;
       const c = bin(cmd.v[i]), cPrev = bin(cmd.v[i - 1]);
       if (c !== cPrev) { ops++; if (tEnd - cmd.t[i] <= recentMs) recOps++; continue; } // 전환 샘플은 판정 제외
       const of = bin(openFb.v[i]);

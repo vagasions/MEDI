@@ -23,13 +23,28 @@
     if (!series || !series.t || series.t.length < 20) {
       return { tagId: cond.tagId, ok: false, reason: '데이터 없음/부족' };
     }
-    const n = series.t.length;
+    // NaN/Inf(품질코드 불량·계산태그 0나눗셈) 표본 제거 — 트립 여유 감시가 불량 표본 1개로
+    // marginPct=NaN → status 'ok' 강등되는 안전 오표시를 막는다 (last/추세/TTA 전부 오염됨)
+    let ft = series.t, fv = series.v;
+    for (let i = 0; i < series.t.length; i++) {
+      if (!Number.isFinite(series.t[i]) || !Number.isFinite(series.v[i])) {
+        ft = []; fv = [];
+        for (let j = 0; j < series.t.length; j++) {
+          if (Number.isFinite(series.t[j]) && Number.isFinite(series.v[j])) { ft.push(series.t[j]); fv.push(series.v[j]); }
+        }
+        break;
+      }
+    }
+    if (ft.length < 20) {
+      return { tagId: cond.tagId, ok: false, reason: '유효 데이터 부족 (품질 불량 과다)' };
+    }
+    const n = ft.length;
     const baseEnd = Math.max(10, Math.floor(n * o.baseFrac));
-    const base = series.v.slice(0, baseEnd).filter(isFinite);
-    const recentStartMs = series.t[n - 1] - o.recentHours * 3600000;
+    const base = fv.slice(0, baseEnd);
+    const recentStartMs = ft[n - 1] - o.recentHours * 3600000;
     let rs = n - 1;
-    while (rs > 0 && series.t[rs - 1] >= recentStartMs) rs--;
-    const recT = series.t.slice(rs), recV = series.v.slice(rs);
+    while (rs > 0 && ft[rs - 1] >= recentStartMs) rs--;
+    const recT = ft.slice(rs), recV = fv.slice(rs);
     const last = recV[recV.length - 1];
     const baseMed = stats.median(base);
     const hi = cond.op !== '<='; // 기본 '>=' (상한 트립)

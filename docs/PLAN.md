@@ -131,7 +131,7 @@ LOF·BOCPD·Spectral Residual 등은 오탐/파라미터 민감성으로 제외)
 
 | 기법 | 논문 | 구현 | 오탐 방지 장치 |
 |---|---|---|---|
-| Matrix Profile (STOMP) | Yeh et al. & Zhu et al., ICDM 2016 | QT 점화식 O(n²) 정확계산, 디스코드 top-K. 상수 부분수열 관례는 레퍼런스 구현(stumpy)과 동일: 둘 다 상수→0, 한쪽만 상수→√m | 이상점수 최상위 태그에만 적용(m≈2h) |
+| Matrix Profile (STOMP) | Yeh et al. & Zhu et al., ICDM 2016 | QT 점화식 O(n²) 정확계산, 디스코드 top-K. 상수(stuck) 부분수열: 둘 다 상수→0, 한쪽만 상수→이웃 후보 제외 — 고정 관례값(√m)을 쓰면 MP가 min이라 상수 창 하나가 전 창의 MP를 캡해 디스코드 순위가 붕괴 | 이상점수 최상위 태그에만 적용(m≈2h), 상수 창 자체는 계기 stuck 진단 담당 |
 | Isolation Forest | Liu et al., ICDM 2008 (인용 5,500+) | ψ=256, 트리 100, 시드 고정 | **정상 베이스라인 구간으로만 학습**(trainRange) |
 | ECOD | Li et al., IEEE TKDE 2022 | **논문 Algorithm 1 완전판** — 좌/우/왜도자동 세 집계의 max(왜도 반대쪽 꼬리 이상도 검출), 동률 정확 ECDF | 파라미터 0개 — 튜닝 오류 원천 차단 |
 | PELT 변화점 | Killick et al., JASA 2012 | 평균+분산 정규비용 len·log(v̂), BIC 페널티 | 스무딩+데시메이션 후 적용, 사후 평균>사전+2σ 검증 |

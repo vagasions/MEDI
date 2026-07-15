@@ -474,9 +474,14 @@
       const recStartMs = s.t[n - 1] - recentHours * 3600000;
       // 베이스라인은 아날로그와 동일하게 히스토리 앞 40% (진행 중인 고장이 기준을 오염시키지 않게)
       const baseEndMs = s.t[0] + (s.t[n - 1] - s.t[0]) * 0.4;
-      // 불량 표본(NaN)은 직전 상태 유지 — NaN이 0으로 읽혀 트립 해제/에지로 오인되는 것 방지
+      // 불량 표본(NaN)은 직전 상태 유지 — NaN이 0으로 읽혀 트립 해제/에지로 오인되는 것 방지.
+      // 선두 NaN 구간은 첫 유한 표본의 비트로 시딩 (0 시딩은 래치된 1 신호에서 존재하지 않는
+      // 0→1 상승 에지·lastChange를 날조한다). 전 구간 불량이면 상태 불명 — 진단 생략.
+      let f = 0;
+      while (f < n && !Number.isFinite(s.v[f])) f++;
+      if (f === n) continue;
       const b = new Array(n);
-      let prevBit = 0;
+      let prevBit = s.v[f] >= 0.5 ? 1 : 0;
       for (let i = 0; i < n; i++) {
         const x = s.v[i];
         if (Number.isFinite(x)) prevBit = x >= 0.5 ? 1 : 0;
@@ -602,12 +607,26 @@
     const isoRecent = iso.scores.slice(recentIdx[0], recentIdx[1]);
     const isoFrac = isoRecent.filter(s => s > isoThr).length / recLen;
 
-    // ECOD — 동일 방식의 경험적 보정
+    // ECOD — 채널별(좌/우/왜도자동) 경험 임계 감시.
+    // max 점수 하나에 단일 임계를 쓰면 베이스라인 양쪽 극단점 점수가 함께 올라 임계가 부풀고,
+    // 진짜 이상(한쪽 꼬리)은 max로 얻는 게 없어 추세형 열화의 recentFrac가 붕괴한다 —
+    // 각 채널을 자기 베이스라인 99분위와 비교해 "어느 채널이든 초과"를 위반으로 계상.
     const ec = adv.ecod(X);
-    const ecBase = ec.scores.slice(baseIdx[0], baseIdx[1]);
-    const ecThr = stats.quantile(ecBase, 0.99);
-    const ecRecent = ec.scores.slice(recentIdx[0], recentIdx[1]);
-    const ecFrac = ecRecent.filter(s => s > ecThr).length / recLen;
+    const ecThr = stats.quantile(ec.scores.slice(baseIdx[0], baseIdx[1]), 0.99); // 차트 표시용
+    let ecFrac = 0;
+    if (ec.channels) {
+      const chThr = {};
+      for (const ch of ['left', 'right', 'auto']) {
+        chThr[ch] = stats.quantile(ec.channels[ch].slice(baseIdx[0], baseIdx[1]), 0.99);
+      }
+      let viol = 0;
+      for (let i = recentIdx[0]; i < recentIdx[1]; i++) {
+        if (ec.channels.left[i] > chThr.left || ec.channels.right[i] > chThr.right || ec.channels.auto[i] > chThr.auto) viol++;
+      }
+      ecFrac = viol / recLen;
+    } else {
+      ecFrac = ec.scores.slice(recentIdx[0], recentIdx[1]).filter(s => s > ecThr).length / recLen;
+    }
 
     // PELT 열화 온셋 — Mahalanobis 거리(≈건강 추이)를 평활·데시메이션 후 분할
     let onset = null;
