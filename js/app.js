@@ -34,6 +34,7 @@
       scenarios: simulator.DEFAULT_ACTIVE.map(a => a.id),
       autoRefresh: true,
       notify: false,
+      simpleMode: true, // 간편 모드 — 핵심 메뉴만 (Toss식 온보딩). "기능 더 보기"로 전체 노출
     };
     // 사내망 배포용 공통 하드코딩(config.js의 window.MEDI_CONFIG) — 저장된 개인 설정이 우선
     if (typeof window !== 'undefined' && window.MEDI_CONFIG) Object.assign(def, window.MEDI_CONFIG);
@@ -320,19 +321,20 @@
   // ---------- 네비게이션 ----------
   const NAV = [
     { group: '감시' },
-    { id: 'dashboard', ico: '📊', name: '대시보드' },
-    { id: 'asset', ico: '⚙️', name: '설비 상세' },
+    { id: 'dashboard', ico: '📊', name: '대시보드', simple: true },
+    { id: 'asset', ico: '⚙️', name: '설비 상세', simple: true },
     { id: 'trains', ico: '🔗', name: '트레인 / 인터록' },
-    { id: 'alarms', ico: '🔔', name: '알람 / 이벤트' },
+    { id: 'alarms', ico: '🔔', name: '알람 / 이벤트', simple: true },
     { group: '분석' },
     { id: 'dataprep', ico: '🧩', name: '데이터 준비 / 조합' },
     { id: 'backtest', ico: '⏮️', name: '백테스트' },
     { id: 'trends', ico: '📈', name: '트렌드 분석' },
     { id: 'patterns', ico: '🎓', name: '분석 실습 (5패턴)' },
-    { id: 'report', ico: '📋', name: '진단 리포트' },
+    { id: 'report', ico: '📋', name: '진단 리포트', simple: true },
     { group: '지식 / 시스템' },
+    { id: 'vendorref', ico: '📖', name: '계기 레퍼런스', simple: true },
     { id: 'ontology', ico: '🕸️', name: '자산 온톨로지' },
-    { id: 'settings', ico: '🔧', name: '설정 / 연동' },
+    { id: 'settings', ico: '🔧', name: '설정 / 연동', simple: true },
   ];
 
   function go(view, assetId) {
@@ -345,17 +347,21 @@
   // ---------- 렌더 루트 ----------
   function render() {
     const activeAlarms = S.alarmEngine.activeEvents().filter(e => e.state === 'active').length;
+    const simple = S.settings.simpleMode !== false;
+    const nav = simple ? NAV.filter(n => !n.group && n.simple) : NAV;
     const app = $('#app');
     app.innerHTML = `
       <div class="sidebar">
         <div class="logo">MEDI <span>PdM</span></div>
         <div class="tagline">설비 예지보전 · dataPARC 연동</div>
-        ${NAV.map(n => n.group
+        <button class="upload-cta" id="nav-upload">📂 내 데이터 분석<span class="sub">파일 놓으면 3단계로 끝</span></button>
+        ${nav.map(n => n.group
           ? `<div class="nav-group">${n.group}</div>`
           : `<button class="nav-item ${S.view === n.id ? 'active' : ''}" data-nav="${n.id}">
               <span class="ico">${n.ico}</span>${n.name}
               ${n.id === 'alarms' && activeAlarms ? `<span class="nav-badge">${activeAlarms}</span>` : ''}
             </button>`).join('')}
+        <button class="nav-item mode-toggle" id="nav-mode">${simple ? '☰ 기능 더 보기' : '✨ 간편 모드로'}</button>
         <div class="foot">
           ${esc((S.source && S.source.info().desc) || '데이터소스 초기화 중')}<br>
           룰베이스 엔진 v1 · AI 분석은 선택 기능
@@ -364,6 +370,14 @@
       <div class="main" id="main"></div>
     `;
     app.querySelectorAll('[data-nav]').forEach(b => b.addEventListener('click', () => go(b.dataset.nav)));
+    $('#nav-upload').addEventListener('click', () => openWizard());
+    $('#nav-mode').addEventListener('click', () => {
+      S.settings.simpleMode = !simple ? true : false;
+      // 간편 모드로 전환 시, 간편 메뉴에 없는 화면에 있으면 대시보드로
+      if (S.settings.simpleMode && !NAV.some(n => n.id === S.view && n.simple)) S.view = 'dashboard';
+      saveSettings();
+      render();
+    });
 
     const main = $('#main');
     main.classList.add('view-enter');
@@ -382,6 +396,7 @@
       case 'alarms': viewAlarms(main); break;
       case 'ontology': viewOntology(main); break;
       case 'report': viewReport(main); break;
+      case 'vendorref': viewVendorRef(main); break;
       case 'settings': viewSettings(main); break;
       default: viewDashboard(main);
     }
@@ -411,6 +426,288 @@
     return `<details class="explain"><summary>${esc(title)}</summary><div class="ex-body">${
       items.map(([k, v]) => `<div class="ex-item"><span class="ex-k">${esc(k)}</span> — ${v}</div>`).join('')
     }</div></details>`;
+  }
+
+  // ==========================================================
+  // 간편 업로드 위저드 — "파일 놓기 → 자동 인식 → 분석 시작" 3단계
+  // 어느 화면에서든 열리는 오버레이. 전역 드래그앤드롭으로도 진입.
+  // ==========================================================
+  function openWizard(file) {
+    S.wiz = { step: 1, file: null, parsed: null, label: '', err: null, cls: null, name: '', creating: false };
+    wizRender();
+    if (file) wizParse(file);
+  }
+  function closeWizard() {
+    const el = $('#wiz-overlay');
+    if (el) el.remove();
+    S.wiz = null;
+  }
+
+  async function wizParse(f) {
+    const w = S.wiz;
+    if (!w) return;
+    w.step = 2; w.err = null;
+    wizRender();
+    try {
+      let parsed;
+      if (/\.xlsx$/i.test(f.name)) parsed = await window.MEDI.xlsx.parse(await f.arrayBuffer());
+      else parsed = datasource.parseCsv(await f.text());
+      const ids = Object.keys(parsed);
+      if (!ids.length) throw new Error('인식된 태그가 없습니다 — 첫 열이 시간, 이후 열이 태그인지 확인하세요');
+      w.parsed = parsed;
+      w.label = f.name;
+      // 요약 계산
+      let t0 = Infinity, t1 = -Infinity, dts = [];
+      for (const s of Object.values(parsed)) {
+        if (!s.t.length) continue;
+        t0 = Math.min(t0, s.t[0]); t1 = Math.max(t1, s.t[s.t.length - 1]);
+        if (s.t.length > 1) dts.push((s.t[s.t.length - 1] - s.t[0]) / (s.t.length - 1));
+      }
+      w.span = { t0, t1, days: (t1 - t0) / 86400000, stepMin: dts.length ? stats.median(dts) / 60000 : null };
+      // 품질 검증 (과거 파일 기준 — 데이터 끝을 현재로)
+      const meta = {};
+      for (const t of ontology.listTags(S.model)) meta[t.id] = { lo: t.lo, hi: t.hi, kind: t.kind };
+      w.quality = quality.report(parsed, meta, { staleHours: 999, nowMs: isFinite(t1) ? t1 : null });
+      // 기존 설비 자동 매칭 — 태그명이 온톨로지 설비와 일치하는지
+      w.matches = ontology.listAssets(S.model).map(a => {
+        const have = a.tags.filter(t => parsed[t.id]);
+        return { asset: a, have: have.length, total: a.tags.length };
+      }).filter(m => m.have >= Math.min(3, m.total)).sort((x, y) => y.have - x.have);
+      // 미매칭이면 조합 제안용 ISA 자동 분류
+      w.unmatchedInfo = ids.map(id => ontology.classifyTag(id));
+      w.step = 3;
+    } catch (e) {
+      w.err = e.message || String(e);
+      w.step = 1;
+    }
+    wizRender();
+  }
+
+  // 설비 종류 추천 — 파일의 태그 분류(ISA-5.1 measure 분포)로 어울리는 클래스 순위
+  function wizSuggestClasses(parsed) {
+    const measures = Object.keys(parsed).map(id => ontology.classifyTag(id).measure);
+    const have = new Set(measures);
+    const ranked = Object.keys(ontology.EQUIP_CLASSES).map(cls => {
+      const reqs = ontology.signalRequirements(cls, S.model);
+      const req = reqs.filter(r => r.required);
+      const hit = req.filter(r => {
+        const m = r.example ? ontology.classifyTag(r.example).measure : null;
+        return m && have.has(m);
+      }).length;
+      return { cls, hit, total: req.length, score: req.length ? hit / req.length : 0 };
+    }).sort((a, b) => b.score - a.score || b.hit - a.hit);
+    return ranked;
+  }
+
+  // 클래스 선택 시 태그 자동 역할 매핑 (dataprep의 autoMap과 동일 원리, 전 태그 대상)
+  function wizAutoMap(parsed, cls) {
+    const reqs = ontology.signalRequirements(cls, S.model);
+    const map = {};
+    const used = new Set();
+    for (const r of reqs) {
+      const exMeas = r.example ? ontology.classifyTag(r.example).measure : null;
+      if (!exMeas) continue;
+      for (const id of Object.keys(parsed)) {
+        if (used.has(id)) continue;
+        if (ontology.classifyTag(id).measure === exMeas) { map[r.role] = id; used.add(id); break; }
+      }
+    }
+    return { map, reqs };
+  }
+
+  async function wizStart() {
+    const w = S.wiz;
+    if (!w || !w.parsed) return;
+    S.csvSeries = w.parsed;
+    S.csvLabel = w.label;
+    S.settings.mode = 'csv';
+    saveSettings();
+    S.source = null;
+    closeWizard();
+    await refreshData();
+    go('dashboard');
+    toast('✓ 데이터 연결 완료 — 진단이 시작됐어요', 'good');
+  }
+
+  function toast(msg, kind) {
+    const el = document.createElement('div');
+    el.className = `toast-simple ${kind || ''}`;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.classList.add('show'), 20);
+    setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 400); }, 3200);
+  }
+
+  function wizRender() {
+    const w = S.wiz;
+    let el = $('#wiz-overlay');
+    if (!w) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'wiz-overlay';
+      el.className = 'wiz-overlay';
+      document.body.appendChild(el);
+    }
+    const dots = `<div class="wiz-dots">${[1, 2, 3].map(i => `<span class="${w.step >= i ? 'on' : ''}"></span>`).join('')}</div>`;
+
+    if (w.step === 1) {
+      el.innerHTML = `
+        <div class="wiz-card">
+          <button class="wiz-x" id="wiz-close">✕</button>
+          ${dots}
+          <h1 class="wiz-title">데이터 파일을 놓으세요</h1>
+          <p class="wiz-sub">PARCview에서 내보낸 CSV나 엑셀(.xlsx) 그대로 —<br>날짜·콤마 형식은 자동으로 알아봐요</p>
+          <div class="wiz-drop" id="wiz-drop">
+            <div class="wiz-drop-ico">📄</div>
+            <div class="wiz-drop-t">여기에 끌어다 놓기</div>
+            <div class="wiz-drop-or">또는</div>
+            <button class="wiz-cta" id="wiz-pick">파일 선택</button>
+            <input type="file" id="wiz-file" accept=".csv,.txt,.tsv,.xlsx" style="display:none">
+          </div>
+          ${w.err ? `<div class="wiz-err">⚠ ${esc(w.err)}</div>` : ''}
+          <div class="wiz-guide">
+            <div class="wiz-guide-t">dataPARC에서 내보내는 법</div>
+            <div class="wiz-steps">
+              <span><b>1</b> PARCview 트렌드에 태그 올리기</span>
+              <span><b>2</b> 우클릭 → <b>Export to File</b></span>
+              <span><b>3</b> 저장된 파일을 여기에</span>
+            </div>
+          </div>
+          <button class="wiz-link" id="wiz-gw">실시간 연동(게이트웨이)이 필요하면 →</button>
+        </div>`;
+      $('#wiz-close').addEventListener('click', closeWizard);
+      $('#wiz-pick').addEventListener('click', () => $('#wiz-file').click());
+      $('#wiz-file').addEventListener('change', e => { if (e.target.files[0]) wizParse(e.target.files[0]); });
+      $('#wiz-gw').addEventListener('click', () => { closeWizard(); go('settings'); });
+      const dz = $('#wiz-drop');
+      dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+      dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+      dz.addEventListener('drop', e => {
+        e.preventDefault(); dz.classList.remove('over');
+        if (e.dataTransfer.files[0]) wizParse(e.dataTransfer.files[0]);
+      });
+      return;
+    }
+
+    if (w.step === 2) {
+      el.innerHTML = `
+        <div class="wiz-card">
+          ${dots}
+          <div class="wiz-spin"><span class="spin"></span></div>
+          <h1 class="wiz-title">읽는 중이에요</h1>
+          <p class="wiz-sub">${esc(w.file ? w.file.name : '')} 형식을 자동으로 알아보고 있어요</p>
+        </div>`;
+      return;
+    }
+
+    // step 3 — 요약 + 매칭 결과 + CTA
+    const q = w.quality;
+    const qBadge = q.errors ? `<span class="wiz-q bad">오류 ${q.errors}</span>`
+      : q.warns ? `<span class="wiz-q warn">주의 ${q.warns}</span>`
+      : `<span class="wiz-q good">양호</span>`;
+    const nTags = Object.keys(w.parsed).length;
+    const matched = w.matches;
+    const suggest = matched.length ? [] : wizSuggestClasses(w.parsed).slice(0, 4);
+    const am = !matched.length && w.cls ? wizAutoMap(w.parsed, w.cls) : null;
+    const mappedCnt = am ? Object.keys(am.map).length : 0;
+    const reqMissing = am ? am.reqs.filter(r => r.required && !am.map[r.role]).length : 0;
+
+    el.innerHTML = `
+      <div class="wiz-card">
+        <button class="wiz-x" id="wiz-close">✕</button>
+        ${dots}
+        <h1 class="wiz-title">확인됐어요</h1>
+        <p class="wiz-sub">${esc(w.label)}</p>
+        <div class="wiz-stats">
+          <div class="wiz-stat"><div class="n">${nTags}</div><div class="l">태그</div></div>
+          <div class="wiz-stat"><div class="n">${w.span.days >= 1 ? w.span.days.toFixed(1) + '일' : Math.round(w.span.days * 24) + '시간'}</div><div class="l">기간</div></div>
+          <div class="wiz-stat"><div class="n">${w.span.stepMin != null ? (w.span.stepMin < 1 ? '<1분' : Math.round(w.span.stepMin) + '분') : '-'}</div><div class="l">수집 주기</div></div>
+          <div class="wiz-stat"><div class="n">${qBadge}</div><div class="l">데이터 품질</div></div>
+        </div>
+        ${w.span.days < 2 ? `<div class="wiz-err">⚠ 기간이 ${w.span.days < 1 ? '하루' : '이틀'} 미만이에요 — 정상 기준 학습을 위해 1~2주치를 권장해요 (짧아도 트렌드 분석은 가능)</div>` : ''}
+        ${matched.length ? `
+          <div class="wiz-match">
+            <div class="wiz-match-t">✓ 등록된 설비 ${matched.length}개와 자동으로 연결됐어요</div>
+            <div class="wiz-match-list">${matched.slice(0, 6).map(m =>
+              `<span class="tag-chip on">${esc(m.asset.name)} <b>${m.have}/${m.total}</b></span>`).join('')}
+              ${matched.length > 6 ? `<span class="faint">외 ${matched.length - 6}개</span>` : ''}</div>
+          </div>
+          <button class="wiz-cta big" id="wiz-go">분석 시작</button>
+        ` : `
+          <div class="wiz-match">
+            <div class="wiz-match-t">등록된 설비와 태그명이 달라요 — <b>설비 종류만 고르면</b> 자동으로 조합해 드릴게요</div>
+            <div class="wiz-cls">${suggest.map(s => {
+              const c = ontology.EQUIP_CLASSES[s.cls];
+              return `<button class="cls-card ${w.cls === s.cls ? 'on' : ''}" data-wizcls="${s.cls}">
+                <div class="cn">${esc(c.ko)}</div>
+                <div class="cs">${s.hit}/${s.total} 필수신호 감지</div>
+              </button>`;
+            }).join('')}</div>
+            ${am ? `
+              <div class="wiz-map-sum">${mappedCnt}개 신호 자동 매핑${reqMissing ? ` · <span class="warn-t">필수 ${reqMissing}개 부족</span> (부족해도 가능한 진단은 돌아가요)` : ' · 필수 신호 충족 ✓'}</div>
+              <input type="text" id="wiz-name" class="wiz-input" placeholder="설비 이름 (예: 3호기 급수펌프)" value="${esc(w.name)}">
+            ` : ''}
+          </div>
+          <button class="wiz-cta big" id="wiz-go" ${!am || mappedCnt < 2 ? 'disabled' : ''}>${am && mappedCnt >= 2 ? '조합 만들고 분석 시작' : '설비 종류를 골라주세요'}</button>
+          <button class="wiz-link" id="wiz-skip">조합 없이 트렌드만 볼래요 →</button>
+        `}
+      </div>`;
+    $('#wiz-close').addEventListener('click', closeWizard);
+    document.querySelectorAll('[data-wizcls]').forEach(b => b.addEventListener('click', () => {
+      w.cls = b.dataset.wizcls;
+      if (!w.name) w.name = (ontology.EQUIP_CLASSES[w.cls] || {}).ko || '';
+      wizRender();
+    }));
+    const nameEl = $('#wiz-name');
+    if (nameEl) nameEl.addEventListener('input', e => { w.name = e.target.value; });
+    const goBtn = $('#wiz-go');
+    if (goBtn) goBtn.addEventListener('click', async () => {
+      if (w.creating) return;
+      w.creating = true;
+      goBtn.disabled = true; goBtn.textContent = '분석 준비 중…';
+      if (!matched.length && am) {
+        // 자동 조합 생성
+        const name = (w.name || '내 설비').trim();
+        const id = 'USR-' + name.replace(/[^A-Za-z0-9가-힣]/g, '').slice(0, 12);
+        const roleInfo = {};
+        for (const r of am.reqs) roleInfo[r.role] = r;
+        ontology.addCustomAsset(S.model, {
+          id, name, class: w.cls, criticality: 'B', custom: true,
+          tags: Object.entries(am.map).map(([role, tagId]) => {
+            const ri = roleInfo[role] || {};
+            return { id: tagId, role, desc: ri.ko || role, unit: ri.unit || '', kind: ri.kind === 'digital' ? 'digital' : undefined };
+          }),
+        });
+        ontology.save(S.model);
+      }
+      await wizStart();
+    });
+    const skip = $('#wiz-skip');
+    if (skip) skip.addEventListener('click', async () => { await wizStart(); go('trends'); });
+  }
+
+  // 전역 드래그앤드롭 — 어디에 놓아도 간편 업로드로
+  function wireGlobalDrop() {
+    let depth = 0;
+    document.addEventListener('dragenter', e => {
+      if (!e.dataTransfer || ![...(e.dataTransfer.items || [])].some(i => i.kind === 'file')) return;
+      depth++;
+      document.body.classList.add('drag-glow');
+    });
+    document.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) document.body.classList.remove('drag-glow');
+    });
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('drop', e => {
+      depth = 0;
+      document.body.classList.remove('drag-glow');
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) return;
+      e.preventDefault();
+      if (S.wiz) wizParse(f);
+      else openWizard(f);
+    });
   }
 
   // ---------- 뷰: 대시보드 ----------
@@ -2079,6 +2376,92 @@
     }
   }
 
+  // ---------- 뷰: 계기 레퍼런스 ----------
+  // 제조사 진단 기능·세팅치·이상 판정값 조회 — 현장 교차확인용.
+  // 검증 배지: ✓ 공식문서 확인 / ⚠ 요확인(2차 출처 — 해당 기기 매뉴얼로 재확인)
+  function viewVendorRef(main) {
+    const lib = window.MEDI.vendorlib;
+    if (!S.vr) S.vr = { q: '', cat: '', vendor: '' };
+    const vr = S.vr;
+    const items = lib.search(lib.ITEMS, vr.q, vr.cat, vr.vendor);
+    const vendorList = lib.vendors(lib.ITEMS);
+
+    main.innerHTML = `
+      ${topbar('계기 레퍼런스 — 제조사 진단 세팅치 · 이상 판정값')}
+      <div class="notice">
+        계기·밸브·계전기의 <strong>제조사 자가진단 기능과 판정 기준</strong>을 모아둔 참조집이에요.
+        이 앱이 히스토리안 신호로 이상을 잡으면, 여기서 해당 계기의 진단 기능을 찾아 <strong>현장에서 교차 확인</strong>하세요.
+        <br><span class="badge g-good">✓ 확인됨</span> = 제조사 공식 문서에서 확인 ·
+        <span class="badge g-warn">⚠ 요확인</span> = 2차 출처/통설 — 적용 전 해당 기기 매뉴얼로 재확인
+      </div>
+      <div class="panel">
+        <div class="vr-filters">
+          <input type="text" id="vr-q" class="vr-search" placeholder="🔍 검색 — 모델명·기능·증상 (예: 3051, 드리프트, 막힘)" value="${esc(vr.q)}">
+          <select id="vr-vendor">
+            <option value="">모든 제조사</option>
+            ${vendorList.map(v => `<option value="${esc(v)}" ${vr.vendor === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+          </select>
+          <button class="btn" id="vr-export" title="전체 매뉴얼/문서 링크 목록을 CSV로 저장 — 엑셀에서 열어 순서대로 내려받으세요">📥 매뉴얼 목록 내보내기</button>
+        </div>
+        <div class="vr-cats">
+          <button class="vr-cat ${!vr.cat ? 'on' : ''}" data-vrcat="">전체 ${lib.ITEMS.length}</button>
+          ${Object.entries(lib.CATS).map(([k, c]) => {
+            const n = lib.ITEMS.filter(i => i.cat === k).length;
+            return n ? `<button class="vr-cat ${vr.cat === k ? 'on' : ''}" data-vrcat="${k}">${c.ico} ${esc(c.ko)} ${n}</button>` : '';
+          }).join('')}
+        </div>
+      </div>
+      <div class="vr-grid">
+        ${items.length ? items.map(it => `
+          <div class="vr-card">
+            <div class="vr-head">
+              <span class="vr-vendor">${esc(it.vendor)}</span>
+              <span class="vr-model">${esc(it.model)}</span>
+              ${it.verified ? '<span class="badge g-good" title="제조사 공식 문서에서 확인">✓ 확인됨</span>' : '<span class="badge g-warn" title="2차 출처 — 기기 매뉴얼로 재확인 필요">⚠ 요확인</span>'}
+            </div>
+            <div class="vr-func">${esc(it.func)}</div>
+            <div class="vr-row"><span class="vr-k">잡는 것</span>${esc(it.detects)}</div>
+            <div class="vr-row"><span class="vr-k">판정</span>${esc(it.signature)}</div>
+            ${it.setting && it.setting !== '-' ? `<div class="vr-row"><span class="vr-k">설정</span>${esc(it.setting)}</div>` : ''}
+            ${it.medi ? `<div class="vr-row medi"><span class="vr-k">이 앱에서</span>${esc(it.medi)}</div>` : ''}
+            <div class="vr-foot">
+              ${it.ne107 && it.ne107 !== '-' ? `<span class="tag-chip" title="NAMUR NE 107 분류">NE107: ${esc(it.ne107)}</span>` : ''}
+              <span class="vr-src" title="출처">${esc(it.source)}</span>
+              ${it.url ? `<a class="vr-doc" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer" title="공식 문서/매뉴얼 열기 — 사내망 PC 브라우저에서 다운로드">📥 매뉴얼/문서</a>` : ''}
+            </div>
+          </div>`).join('')
+        : '<div class="panel faint" style="grid-column:1/-1">검색 결과가 없어요 — 다른 검색어나 분류를 시도해 보세요.</div>'}
+      </div>
+      <div class="faint" style="margin:10px 4px">
+        ⚠ 판정값·설정치는 기기 버전/옵션에 따라 다릅니다. 실제 적용 전 반드시 해당 기기의 매뉴얼·세팅 시트로 확인하세요.
+        설비 상세 화면의 계기 진단 카드에서도 관련 레퍼런스가 함께 표시됩니다.
+      </div>
+    `;
+    wireTopbar();
+    $('#vr-q').addEventListener('input', e => {
+      vr.q = e.target.value; render();
+      const el2 = $('#vr-q'); el2.focus(); el2.setSelectionRange(el2.value.length, el2.value.length);
+    });
+    $('#vr-vendor').addEventListener('change', e => { vr.vendor = e.target.value; render(); });
+    document.querySelectorAll('[data-vrcat]').forEach(b => b.addEventListener('click', () => { vr.cat = b.dataset.vrcat; render(); }));
+    // 매뉴얼/문서 링크 일괄 내보내기 — 사내망 PC에서 순서대로 내려받는 용도
+    $('#vr-export').addEventListener('click', () => {
+      const q = s => '"' + String(s || '').replace(/"/g, '""') + '"';
+      const rows = [['분류', '제조사', '기기', '진단 기능', '확인 상태', '문서 링크'].map(q).join(',')];
+      for (const it of lib.ITEMS) {
+        rows.push([(lib.CATS[it.cat] || {}).ko || it.cat, it.vendor, it.model, it.func,
+          it.verified ? '공식문서 확인' : '요확인(2차 출처)', it.url || ''].map(q).join(','));
+      }
+      const blob = new Blob(['﻿' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'MEDI-계기-매뉴얼-목록.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      toast('✓ 매뉴얼 목록 CSV 저장 — 엑셀에서 열어 링크로 내려받으세요', 'good');
+    });
+  }
+
   // ---------- 뷰: 설정 ----------
   function viewSettings(main) {
     const st = S.settings;
@@ -2419,6 +2802,7 @@
   });
 
   (async function boot() {
+    wireGlobalDrop();
     render();
     await refreshData();
     scheduleAutoRefresh();

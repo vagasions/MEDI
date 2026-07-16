@@ -916,6 +916,48 @@ t('OV 밸브 NaN 강건 — 리미트 신호 품질 불량이 허위 OV-FTF를 �
   assert(h.score >= 85, `score=${h.score}`);
 });
 
+console.log('== 계기 레퍼런스 라이브러리 (vendorlib) ==');
+const vendorlib = require(path.join(__dirname, '../js/vendorlib.js'));
+t('구조 검증 — 필수 필드·카테고리·URL·verified 불리언', () => {
+  assert(vendorlib.ITEMS.length >= 35, `항목 ${vendorlib.ITEMS.length}개`);
+  const catKeys = Object.keys(vendorlib.CATS);
+  for (const it of vendorlib.ITEMS) {
+    for (const f of ['cat', 'vendor', 'model', 'func', 'detects', 'signature', 'source']) {
+      assert(it[f] && String(it[f]).length > 2, `${it.vendor}/${it.func}: ${f} 누락`);
+    }
+    assert(catKeys.includes(it.cat), `잘못된 cat: ${it.cat}`);
+    assert(typeof it.verified === 'boolean', `${it.func}: verified 불리언 아님`);
+    assert(it.url && /^https?:\/\//.test(it.url), `${it.func}: 문서 URL 누락`);
+  }
+});
+t('커버리지 — 제조사 10곳 이상, 요청 제조사(ABB·Siemens·Emerson·Yokogawa·Flowserve) 포함', () => {
+  const vs = vendorlib.vendors(vendorlib.ITEMS);
+  assert(vs.length >= 10, `제조사 ${vs.length}곳: ${vs.join(', ')}`);
+  for (const need of ['ABB', 'Siemens', 'Emerson', 'Yokogawa', 'Flowserve']) {
+    assert(vs.some(v => v.includes(need)), `${need} 누락`);
+  }
+  // 주요 카테고리 각각 2개 이상
+  for (const cat of ['pressure', 'temperature', 'valve', 'flow', 'electrical']) {
+    const n = vendorlib.ITEMS.filter(i => i.cat === cat).length;
+    assert(n >= 2, `${cat} 항목 ${n}개`);
+  }
+});
+t('검색 — 모델명/기능/제조사 필터', () => {
+  assert(vendorlib.search(vendorlib.ITEMS, '3051').length >= 1, '3051 검색');
+  assert(vendorlib.search(vendorlib.ITEMS, '드리프트').length >= 3, '드리프트 검색');
+  assert(vendorlib.search(vendorlib.ITEMS, '', 'valve').every(i => i.cat === 'valve'), 'cat 필터');
+  assert(vendorlib.search(vendorlib.ITEMS, '', '', 'Yokogawa').every(i => i.vendor === 'Yokogawa'), 'vendor 필터');
+  assert(vendorlib.search(vendorlib.ITEMS, 'zzz없는검색어').length === 0, '무결과');
+});
+t('정직성 — 미확인 수치 명시 항목 존재, verified=false에 근거 표기', () => {
+  // "수치 미확인"을 명시한 항목이 있어야 함 (수치 창작 금지 원칙의 증거)
+  assert(vendorlib.ITEMS.some(i => i.signature.includes('수치 미확인')), '수치 미확인 명시 없음');
+  // 요확인 항목은 출처에 그 사유가 드러나야 함
+  for (const it of vendorlib.ITEMS.filter(i => !i.verified)) {
+    assert(/요확인|2차|통설|미확인/.test(it.source + it.signature), `${it.func}: 요확인 사유 불명`);
+  }
+});
+
 Promise.allSettled(pending).then(() => {
   console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
   process.exit(fail ? 1 : 0);
